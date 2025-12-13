@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36623.8 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PomodoroWidget", "PomodoroWidget\PomodoroWidget.csproj", "{DA5C06BD-52C0-4B1A-BAB0-B4ED8650D676}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{DA5C06BD-52C0-4B1A-BAB0-B4ED8650D676}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DA5C06BD-52C0-4B1A-BAB0-B4ED8650D676}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DA5C06BD-52C0-4B1A-BAB0-B4ED8650D676}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DA5C06BD-52C0-4B1A-BAB0-B4ED8650D676}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {6776949D-5C47-4B25-8F45-6F09CFDAFDC7}
+	EndGlobalSection
+EndGlobal
