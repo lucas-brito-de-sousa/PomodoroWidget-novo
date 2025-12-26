@@ -54,6 +54,8 @@ namespace PomodoroWidget
         private int lastSavedSeconds = 0;
         private int totalSecondsAdded = 0;
 
+
+
         // Variáveis para movimento
         private bool isDragging = false;
         private Point dragStartPoint;
@@ -1115,9 +1117,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // Verificar atualizações da tarefa estudando
         // Modifique o método CheckForStudyingTaskUpdates:
+
+
+
+
+
         private void CheckForStudyingTaskUpdates()
         {
-            // Verificar se passou tempo suficiente desde a última verificação
             if (DateTime.Now - lastSyncCheckTime < syncCheckInterval && lastSyncCheckTime != DateTime.MinValue)
             {
                 return;
@@ -1125,24 +1131,31 @@ document.addEventListener('DOMContentLoaded', function() {
 
             lastSyncCheckTime = DateTime.Now;
 
+
             try
             {
                 using (var client = new WebClient())
                 {
-                    // Adicionar timeout para evitar requisições longas
                     client.Encoding = Encoding.UTF8;
                     client.Headers[HttpRequestHeader.UserAgent] = "PomodoroWidget/1.0";
 
                     string jsonData = client.DownloadString("https://sistemadetarefas.online/pomodoro_sync.php");
-
                     var response = Newtonsoft.Json.JsonConvert.DeserializeObject<PomodoroSyncResponse>(jsonData);
 
                     if (response.success && response.data != null)
                     {
+                        // ... código existente ...
+
+                        // Capturar mais dados se disponíveis
+
+
                         int? studyingTaskId = response.data.studyingTaskId;
                         string taskName = response.data.taskName;
                         string source = response.data.source;
                         int? session_id = response.data.sessionId;
+                        int? userId = response.data.userId;
+                        int? projectId = response.data.projectId;
+                        string projectName = response.data.projectName;
 
                         // Buscar URLs se tiver session_id (apenas se não tiver buscado recentemente)
                         if (session_id.HasValue && ShouldProcessSession(session_id.Value))
@@ -1173,10 +1186,11 @@ document.addEventListener('DOMContentLoaded', function() {
                             }
                         }
 
-                        // Só sincronizar se veio do site
+
                         if (source == "website")
                         {
-                            UpdateFromDatabase(studyingTaskId, taskName);
+                            // Passar TODOS os dados capturados
+                            UpdateFromDatabase(studyingTaskId, taskName, userId, projectId, projectName);
                         }
                     }
                 }
@@ -1184,15 +1198,19 @@ document.addEventListener('DOMContentLoaded', function() {
             catch (WebException webEx)
             {
                 Log($"Erro de conexão ao verificar atualizações: {webEx.Message}");
-
-                // Em caso de erro, aumentar o intervalo temporariamente
-                syncTimer.Interval = Math.Min(syncTimer.Interval * 2, 60000); // Máximo 60 segundos
+                syncTimer.Interval = Math.Min(syncTimer.Interval * 2, 60000);
             }
             catch (Exception ex)
             {
                 Log($"Erro ao verificar atualizações: {ex.Message}");
             }
         }
+
+
+        private int? currentUserId = null;
+        private int? currentProjectId = null;
+        private string currentProjectName = null;
+
 
         // Adicione este método para controlar processamento de sessões:
         private Dictionary<int, DateTime> processedSessions = new Dictionary<int, DateTime>();
@@ -1258,41 +1276,127 @@ document.addEventListener('DOMContentLoaded', function() {
 
 
         // Atualizar a partir do banco de dados
-        private void UpdateFromDatabase(int? studyingTaskId, string taskNameFromSync)
+
+
+        private void UpdateFromDatabase(int? studyingTaskId, string taskNameFromSync, int? userId, int? projectId, string projectName)
         {
-            // Se studyingTaskId for null, significa que pararam de estudar
             if (!studyingTaskId.HasValue)
             {
                 if (currentStudyingTaskId.HasValue)
                 {
                     Log("Site parou de estudar");
-                    SaveAccumulatedTime(); // Salvar tempo acumulado antes de limpar
+                    SaveAccumulatedTime();
                     ClearStudyingTask();
                 }
                 return;
             }
 
-            // Se é uma tarefa diferente da atual
             if (studyingTaskId.Value != currentStudyingTaskId)
             {
                 Log($"Site marcou tarefa como estudando: {studyingTaskId.Value} - {taskNameFromSync}");
 
-                // Salvar tempo acumulado da tarefa anterior, se houver
                 if (currentStudyingTaskId.HasValue && accumulatedSeconds > 0)
                 {
                     UpdateTaskStudyTime(currentStudyingTaskId.Value, accumulatedSeconds, true);
                     accumulatedSeconds = 0;
                 }
 
-                // Usar o nome da tarefa que veio da tabela pomodoro_sync
-                SetStudyingTask(studyingTaskId.Value, taskNameFromSync);
+                // ATUALIZE TODOS OS DADOS
+                currentUserId = userId; // ← AGORA TEM user_id!
+                currentProjectId = projectId;
+                currentProjectName = projectName;
+                currentStudyingTaskName = taskNameFromSync;
 
-                // Resetar contadores quando mudar de tarefa
+                SetStudyingTask(studyingTaskId.Value, taskNameFromSync);
                 lastSavedSeconds = 0;
                 totalSecondsAdded = 0;
                 accumulatedSeconds = 0;
+
+                Log($"Dados atualizados - UserID: {currentUserId}, TaskID: {studyingTaskId}, Projeto: {projectName}");
             }
         }
+
+
+        private void SaveToEstudoRegistro(int minutesStudied)
+        {
+            // Verificar se temos dados suficientes
+            if (!currentStudyingTaskId.HasValue || minutesStudied <= 0)
+            {
+                //Log($"DEBUG: Dados insuficientes - TaskID: {currentStudyingTaskId}, Minutos: {minutesStudied}");
+                return;
+            }
+
+            // Usar user_id padrão se necessário
+            int userIdToSave = currentUserId ?? 1;
+
+            var data = new
+            {
+                action = "save_estudo_registro",
+                usuario_id = userIdToSave,
+                minutos_estudados = minutesStudied,
+                task_name = currentStudyingTaskName,
+                tarefa_id = currentStudyingTaskId,
+                project_name = currentProjectName ?? "",
+                data_estudo = DateTime.Now.ToString("yyyy-MM-dd")
+            };
+
+            string json = Newtonsoft.Json.JsonConvert.SerializeObject(data);
+
+            Log($"DEBUG: Enviando para estudo_registro: {json}");
+
+            // Usar Task.Run para não bloquear a thread principal
+            Task.Run(() =>
+            {
+                try
+                {
+                    using (var client = new WebClient())
+                    {
+                        client.Headers[HttpRequestHeader.ContentType] = "application/json";
+                        client.Headers[HttpRequestHeader.UserAgent] = "PomodoroWidget/1.0";
+                        client.Encoding = Encoding.UTF8;
+
+                        // Configurar o evento de completion
+                        client.UploadStringCompleted += (sender, e) =>
+                        {
+                            if (e.Error != null)
+                            {
+                                Log($"DEBUG: Erro ao enviar estudo_registro: {e.Error.Message}");
+                            }
+                            else
+                            {
+                                try
+                                {
+                                    var response = Newtonsoft.Json.JsonConvert.DeserializeObject<dynamic>(e.Result);
+                                    if (response.success == true)
+                                    {
+                                        Log($"DEBUG: Registro salvo com sucesso! ID: {response.insert_id}");
+                                    }
+                                    else
+                                    {
+                                        Log($"DEBUG: Erro na resposta: {response.message}");
+                                    }
+                                }
+                                catch (Exception parseEx)
+                                {
+                                    Log($"DEBUG: Erro ao parsear resposta: {parseEx.Message}");
+                                    Log($"DEBUG: Resposta bruta: {e.Result}");
+                                }
+                            }
+                        };
+
+                        // Iniciar upload assíncrono
+                        client.UploadStringAsync(new Uri("https://sistemadetarefas.online/pomodoro_sync.php"), "POST", json);
+
+                        Log($"DEBUG: UploadStringAsync iniciado (não-bloqueante)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"DEBUG: Exception em SaveToEstudoRegistro async: {ex.Message}");
+                }
+            });
+        }
+
 
         // Atualizar o tempo da tarefa atual a cada segundo
         // Modifique o método UpdateCurrentTaskStudyTime:
@@ -1353,16 +1457,30 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         // Adicione este método para salvar tempo acumulado:
+        // Atualizar segundos da tarefa no banco de dados
+
         private void SaveAccumulatedTime()
         {
             if (currentStudyingTaskId.HasValue && accumulatedSeconds > 0)
             {
+                int minutesStudied = (int)Math.Round(accumulatedSeconds / 60.0);
+
+                // 1. Atualizar tempo na tarefa (método existente)
                 UpdateTaskStudyTime(currentStudyingTaskId.Value, accumulatedSeconds, false);
+
+                // 2. Salvar no pomodoro_sync (se necessário - método anterior)
+
+                // 3. NOVO: Salvar no estudo_registro
+                SaveToEstudoRegistro(minutesStudied);
+
                 lastUpdateTime = DateTime.Now;
                 accumulatedSeconds = 0;
             }
         }
-        // Atualizar segundos da tarefa no banco de dados
+
+
+
+
         // Modifique o método UpdateTaskStudyTime:
         private void UpdateTaskStudyTime(int taskId, int secondsToAdd, bool forceLog = false)
         {
@@ -1388,7 +1506,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
                     // Usar UploadStringAsync para não bloquear a thread principal
                     client.UploadStringAsync(new Uri("https://sistemadetarefas.online/tarefas.php"), "POST", json);
-
                     // Log apenas se forçado ou se for uma quantidade significativa de tempo
                     if (forceLog || secondsToAdd >= 60)
                     {
@@ -1440,20 +1557,21 @@ document.addEventListener('DOMContentLoaded', function() {
             public PomodoroData data { get; set; }
         }
 
+
         public class PomodoroData
         {
             public int? studyingTaskId { get; set; }
             public string taskName { get; set; }
             public string source { get; set; }
-
-            // CORREÇÃO: Use sessionId (com I maiúsculo) para combinar com o JSON
             public int? sessionId { get; set; }
-
-            // Mantenha as outras propriedades para compatibilidade
+            public int? userId { get; set; }        // ← DEVE ESTAR AQUI
+            public int? projectId { get; set; }     // ← DEVE ESTAR AQUI
+            public string projectName { get; set; } // ← DEVE ESTAR AQUI
             public List<string> urls { get; set; }
             public List<string> sessionUrls { get; set; }
             public string baseUrl { get; set; }
         }
+
 
 
         private void Log(string message)
