@@ -1144,9 +1144,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
                     if (response.success && response.data != null)
                     {
-                        // ... código existente ...
-
-                        // Capturar mais dados se disponíveis
+                       
 
 
                         int? studyingTaskId = response.data.studyingTaskId;
@@ -1317,34 +1315,30 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
 
-        private void SaveToEstudoRegistro(int minutesStudied)
+        private void SaveToEstudoRegistro(decimal minutosEstudados)
         {
-            // Verificar se temos dados suficientes
-            if (!currentStudyingTaskId.HasValue || minutesStudied <= 0)
-            {
-                //Log($"DEBUG: Dados insuficientes - TaskID: {currentStudyingTaskId}, Minutos: {minutesStudied}");
+            if (!currentStudyingTaskId.HasValue || minutosEstudados <= 0)
                 return;
-            }
 
-            // Usar user_id padrão se necessário
             int userIdToSave = currentUserId ?? 1;
 
             var data = new
             {
                 action = "save_estudo_registro",
                 usuario_id = userIdToSave,
-                minutos_estudados = minutesStudied,
+                minutos_estudados = minutosEstudados,
                 task_name = currentStudyingTaskName,
                 tarefa_id = currentStudyingTaskId,
                 project_name = currentProjectName ?? "",
-                data_estudo = DateTime.Now.ToString("yyyy-MM-dd")
+                data_estudo = DateTime.Now.ToString("yyyy-MM-dd"),
+                // Adiciona o horário do computador
+                data_criacao_computador = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
             };
 
             string json = Newtonsoft.Json.JsonConvert.SerializeObject(data);
 
-            Log($"DEBUG: Enviando para estudo_registro: {json}");
+            Log($"DEBUG: Enviando {minutosEstudados} minutos para estudo_registro");
 
-            // Usar Task.Run para não bloquear a thread principal
             Task.Run(() =>
             {
                 try
@@ -1352,52 +1346,23 @@ document.addEventListener('DOMContentLoaded', function() {
                     using (var client = new WebClient())
                     {
                         client.Headers[HttpRequestHeader.ContentType] = "application/json";
-                        client.Headers[HttpRequestHeader.UserAgent] = "PomodoroWidget/1.0";
                         client.Encoding = Encoding.UTF8;
 
-                        // Configurar o evento de completion
-                        client.UploadStringCompleted += (sender, e) =>
-                        {
-                            if (e.Error != null)
-                            {
-                                Log($"DEBUG: Erro ao enviar estudo_registro: {e.Error.Message}");
-                            }
-                            else
-                            {
-                                try
-                                {
-                                    var response = Newtonsoft.Json.JsonConvert.DeserializeObject<dynamic>(e.Result);
-                                    if (response.success == true)
-                                    {
-                                        Log($"DEBUG: Registro salvo com sucesso! ID: {response.insert_id}");
-                                    }
-                                    else
-                                    {
-                                        Log($"DEBUG: Erro na resposta: {response.message}");
-                                    }
-                                }
-                                catch (Exception parseEx)
-                                {
-                                    Log($"DEBUG: Erro ao parsear resposta: {parseEx.Message}");
-                                    Log($"DEBUG: Resposta bruta: {e.Result}");
-                                }
-                            }
-                        };
+                        string response = client.UploadString("https://sistemadetarefas.online/pomodoro_sync.php", "POST", json);
 
-                        // Iniciar upload assíncrono
-                        client.UploadStringAsync(new Uri("https://sistemadetarefas.online/pomodoro_sync.php"), "POST", json);
-
-                        Log($"DEBUG: UploadStringAsync iniciado (não-bloqueante)");
+                        var result = Newtonsoft.Json.JsonConvert.DeserializeObject<dynamic>(response);
+                        if (result.success == true)
+                            Log($"DEBUG: ✓ {minutosEstudados} min salvos (ID: {result.insert_id})");
+                        else
+                            Log($"DEBUG: ✗ Erro: {result.message}");
                     }
                 }
                 catch (Exception ex)
                 {
-                    Log($"DEBUG: Exception em SaveToEstudoRegistro async: {ex.Message}");
+                    Log($"DEBUG: Erro ao salvar: {ex.Message}");
                 }
             });
         }
-
-
         // Atualizar o tempo da tarefa atual a cada segundo
         // Modifique o método UpdateCurrentTaskStudyTime:
         private void UpdateCurrentTaskStudyTime()
@@ -1459,25 +1424,36 @@ document.addEventListener('DOMContentLoaded', function() {
         // Adicione este método para salvar tempo acumulado:
         // Atualizar segundos da tarefa no banco de dados
 
+
+
         private void SaveAccumulatedTime()
         {
             if (currentStudyingTaskId.HasValue && accumulatedSeconds > 0)
             {
-                int minutesStudied = (int)Math.Round(accumulatedSeconds / 60.0);
+                // Converter segundos para minutos decimais
+                decimal minutosDecimais = Math.Round(accumulatedSeconds / 60.0m, 2);
 
-                // 1. Atualizar tempo na tarefa (método existente)
-                UpdateTaskStudyTime(currentStudyingTaskId.Value, accumulatedSeconds, false);
+                // Só salvar se tiver pelo menos 0.5 minutos (30 segundos)
+                if (minutosDecimais >= 0.5m)
+                {
+                    Log($"Salvando {minutosDecimais} minutos ({accumulatedSeconds} segundos)");
 
-                // 2. Salvar no pomodoro_sync (se necessário - método anterior)
+                    // 1. Atualizar tempo na tarefa
+                    UpdateTaskStudyTime(currentStudyingTaskId.Value, accumulatedSeconds, false);
 
-                // 3. NOVO: Salvar no estudo_registro
-                SaveToEstudoRegistro(minutesStudied);
+                    // 2. Salvar no estudo_registro
+                    SaveToEstudoRegistro(minutosDecimais);
 
-                lastUpdateTime = DateTime.Now;
-                accumulatedSeconds = 0;
+                    lastUpdateTime = DateTime.Now;
+                    accumulatedSeconds = 0;
+                }
+                else
+                {
+                    // Aguarda acumular mais tempo
+                    Log($"Aguardando: {minutosDecimais} minutos (menos que 0.5)");
+                }
             }
         }
-
 
 
 
