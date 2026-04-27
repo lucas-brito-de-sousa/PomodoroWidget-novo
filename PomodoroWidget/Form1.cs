@@ -1,98 +1,47 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Data.SqlClient;
+using System;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.IO;
-using System.Linq;
-using System.Net;
 using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
 
 namespace PomodoroWidget
 {
     public partial class Form1 : Form
     {
-        [DllImport("user32.dll")]
-        static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-
-        [DllImport("user32.dll")]
-        public static extern bool ReleaseCapture();
-
-        [DllImport("user32.dll")]
-        public static extern int SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
-
-        [DllImport("user32.dll")]
-        static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
-
-        [DllImport("gdi32.dll")]
-        static extern IntPtr CreateRoundRectRgn(int nLeftRect, int nTopRect, int nRightRect, int nBottomRect, int nWidthEllipse, int nHeightEllipse);
-
-        [DllImport("gdi32.dll")]
-        static extern bool DeleteObject(IntPtr hObject);
+        // ── P/Invoke ──────────────────────────────────────────────────────────
+        [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+        [DllImport("user32.dll")] public static extern bool ReleaseCapture();
+        [DllImport("user32.dll")] public static extern int SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
+        [DllImport("user32.dll")] static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
+        [DllImport("gdi32.dll")] static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int cx, int cy);
+        [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr hObject);
 
         public const int WM_NCLBUTTONDOWN = 0xA1;
         public const int HT_CAPTION = 0x2;
-
         static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         const uint SWP_NOSIZE = 0x0001;
         const uint SWP_NOMOVE = 0x0002;
 
-        private Timer syncTimer;
-        private Timer secondsUpdateTimer;
         private string appDataPath;
         private bool isWebBrowserReady = false;
 
-        // Variáveis para sincronização
-        private int? currentStudyingTaskId = null;
-        private string currentStudyingTaskName = "Nenhuma tarefa";
-        private int lastSavedSeconds = 0;
-        private int totalSecondsAdded = 0;
-
-
-
-        // Variáveis para movimento
-        private bool isDragging = false;
-        private Point dragStartPoint;
-
-
-        private DateTime lastUpdateTime = DateTime.MinValue;
-        private DateTime lastSyncCheckTime = DateTime.MinValue;
-        private readonly TimeSpan updateInterval = TimeSpan.FromSeconds(30); // Atualizar a cada 30 segundos
-        private readonly TimeSpan syncCheckInterval = TimeSpan.FromSeconds(15); // Verificar sync a cada 15 segundos
-        private int accumulatedSeconds = 0;
-
-
-
+        // ── Construtor ────────────────────────────────────────────────────────
         public Form1()
         {
             InitializeComponent();
-            // Configurar caminho de dados
-            appDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PomodoroWidget");
+            appDataPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "PomodoroWidget");
             Directory.CreateDirectory(appDataPath);
-
             SetupForm();
             SetupWebBrowser();
-            SetupSyncTimer();
-            SetupSecondsUpdateTimer();
-
-            this.FormClosing += Form1_FormClosing;
-
-
-
-            Log("Pomodoro Widget iniciado - SEM BORDAS COM BOTÕES CORRETOS");
+            Log("Widget iniciado — WebView2 + fetch()");
         }
 
-        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
-        {
-            SaveAccumulatedTime();
-        }
-
+        // ── Formulário ────────────────────────────────────────────────────────
         private void SetupForm()
         {
             this.Text = "Pomodoro Widget";
@@ -100,1496 +49,958 @@ namespace PomodoroWidget
             this.StartPosition = FormStartPosition.Manual;
             this.Location = new Point(
                 Screen.PrimaryScreen.WorkingArea.Width - this.Width - 20,
-                Screen.PrimaryScreen.WorkingArea.Height - this.Height - 20
-            );
-
-            // REMOVER BORDA COMPLETAMENTE
+                Screen.PrimaryScreen.WorkingArea.Height - this.Height - 20);
             this.FormBorderStyle = FormBorderStyle.None;
             this.TopMost = true;
             this.ShowInTaskbar = false;
             this.BackColor = Color.FromArgb(30, 30, 30);
-            this.Padding = new Padding(0);
             this.DoubleBuffered = true;
-
-            // Aplicar cantos arredondados
             SetRoundRegion(22);
-
-            // Manter sempre no topo
             SetWindowPos(this.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
         }
 
-        private void SetRoundRegion(int radius)
+        private void SetRoundRegion(int r)
         {
-            IntPtr region = CreateRoundRectRgn(0, 0, this.Width + 1, this.Height + 1, radius, radius);
-            SetWindowRgn(this.Handle, region, true);
-            DeleteObject(region);
+            IntPtr rgn = CreateRoundRectRgn(0, 0, this.Width + 1, this.Height + 1, r, r);
+            SetWindowRgn(this.Handle, rgn, true);
+            DeleteObject(rgn);
         }
 
-        protected override void OnResize(EventArgs e)
+        protected override void OnResize(EventArgs e) { base.OnResize(e); SetRoundRegion(22); }
+
+        // F12 abre DevTools
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            base.OnResize(e);
-            // Reaplicar cantos arredondados quando redimensionar
+            if (keyData == Keys.F12 && isWebBrowserReady)
+            {
+                webBrowser1.CoreWebView2.OpenDevToolsWindow();
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get { var cp = base.CreateParams; cp.ClassStyle |= 0x20000; return cp; }
+        }
+
+        // ── WebView2 ──────────────────────────────────────────────────────────
+        private async void SetupWebBrowser()
+        {
+            await webBrowser1.EnsureCoreWebView2Async(null);
+
+            var s = webBrowser1.CoreWebView2.Settings;
+            s.AreDevToolsEnabled = true;
+            s.IsScriptEnabled = true;
+            s.AreDefaultContextMenusEnabled = true;
+            s.AreDefaultScriptDialogsEnabled = true;
+            s.IsStatusBarEnabled = false;
+            s.AreHostObjectsAllowed = true;
+
+            webBrowser1.CoreWebView2.AddHostObjectToScript("external", new HostObject(this));
+            webBrowser1.NavigationCompleted += (o, e) => { isWebBrowserReady = true; Log("WebView2 pronto"); };
+
+            // Escreve o HTML em arquivo temporário e mapeia como https://pomodoro.local
+            // Isso dá ao JS uma origem real, permitindo fetch() para o servidor
+            string tempDir = Path.Combine(Path.GetTempPath(), "PomodoroWidget");
+            Directory.CreateDirectory(tempDir);
+            string htmlFile = Path.Combine(tempDir, "index.html");
+            File.WriteAllText(htmlFile, BuildHtml(), System.Text.Encoding.UTF8);
+
+            webBrowser1.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                "pomodoro.local",
+                tempDir,
+                CoreWebView2HostResourceAccessKind.Allow);
+
+            webBrowser1.CoreWebView2.Navigate("https://pomodoro.local/index.html");
+        }
+
+        // ── Host Object — apenas ações que PRECISAM do C# ────────────────────
+        [ComVisible(true)]
+        [ClassInterface(ClassInterfaceType.AutoDual)]
+        public class HostObject
+        {
+            private Form1 f;
+            public HostObject(Form1 form) { f = form; }
+
+            public void CloseApp() => f.Invoke(new Action(() => f.Close()));
+
+            public void StartDrag() => f.Invoke(new Action(() =>
+            {
+                ReleaseCapture();
+                SendMessage(f.Handle, WM_NCLBUTTONDOWN, HT_CAPTION, 0);
+            }));
+
+            public void MinimizeWidget() => f.Invoke(new Action(() => f.DoMinimize()));
+
+            // Abre URL no browser do sistema (impossível via fetch)
+            public void OpenLink(string url) => f.Invoke(new Action(() =>
+            {
+                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = url, UseShellExecute = true }); }
+                catch (Exception ex) { f.Log("OpenLink erro: " + ex.Message); }
+            }));
+
+            // Log opcional do JS no arquivo
+            public void LogFromJS(string msg) => f.Invoke(new Action(() => f.Log("[JS] " + msg)));
+        }
+
+        public void DoMinimize()
+        {
+            if (this.Height > 100)
+            {
+                this.Height = 57;
+                _ = webBrowser1.ExecuteScriptAsync(
+                    "var c=document.getElementById('pomodoroContent');if(c)c.style.display='none';" +
+                    "var b=document.getElementById('pomodoroMinimize');if(b)b.textContent='▶';");
+            }
+            else
+            {
+                this.Height = 430;
+                _ = webBrowser1.ExecuteScriptAsync(
+                    "var c=document.getElementById('pomodoroContent');if(c)c.style.display='flex';" +
+                    "var b=document.getElementById('pomodoroMinimize');if(b)b.textContent='▼';");
+            }
             SetRoundRegion(22);
         }
 
-        private void SetupWebBrowser()
+        protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            // Configurar WebBrowser para versão mais recente do IE possível
-            var appName = Process.GetCurrentProcess().ProcessName + ".exe";
-            SetBrowserFeatureControl();
-
-            webBrowser1.ScriptErrorsSuppressed = true;
-            webBrowser1.ScrollBarsEnabled = false;
-            webBrowser1.AllowNavigation = false;
-            webBrowser1.BackColor = Color.FromArgb(30, 30, 30);
-            webBrowser1.AllowWebBrowserDrop = false;
-            webBrowser1.Dock = DockStyle.Fill;
-
-            webBrowser1.DocumentCompleted += WebBrowser1_DocumentCompleted;
-
-            // Carregar conteúdo inicial
-            LoadHtmlContent();
+            if (isWebBrowserReady)
+                _ = webBrowser1.ExecuteScriptAsync("onAppClosing()");
+            Log("Widget fechado");
+            base.OnFormClosing(e);
         }
 
-        private static void SetBrowserFeatureControl()
-        {
-            var appName = System.IO.Path.GetFileName(System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName);
-
-            // IE11
-            SetBrowserFeatureControlKey("FEATURE_BROWSER_EMULATION", appName, 11001);
-            SetBrowserFeatureControlKey("FEATURE_AJAX_CONNECTIONEVENTS", appName, 1);
-            SetBrowserFeatureControlKey("FEATURE_ENABLE_CLIPCHILDREN_OPTIMIZATION", appName, 1);
-            SetBrowserFeatureControlKey("FEATURE_GPU_RENDERING", appName, 1);
-            SetBrowserFeatureControlKey("FEATURE_WEBOC_DOCUMENT_ZOOM", appName, 1);
-            SetBrowserFeatureControlKey("FEATURE_NINPUT_LEGACY", appName, 1);
-        }
-
-        private static void SetBrowserFeatureControlKey(string feature, string appName, uint value)
+        // ── Log ───────────────────────────────────────────────────────────────
+        public void Log(string msg)
         {
             try
             {
-                using (var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(
-                    String.Concat(@"Software\Microsoft\Internet Explorer\Main\FeatureControl\", feature),
-                    Microsoft.Win32.RegistryKeyPermissionCheck.ReadWriteSubTree))
-                {
-                    key.SetValue(appName, (UInt32)value, Microsoft.Win32.RegistryValueKind.DWord);
-                }
+                File.AppendAllText(
+                    Path.Combine(appDataPath, "pomodoro.log"),
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " - " + msg + Environment.NewLine);
+                Debug.WriteLine(msg);
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"Erro ao definir chave de registro: {ex.Message}");
-            }
+            catch { }
         }
 
-        private void WebBrowser1_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
-        {
-            isWebBrowserReady = true;
-            webBrowser1.ObjectForScripting = new ObjectForScripting(this);
-
-            // Configurar eventos de mouse para movimento
-            SetupMoveEvents();
-
-            Log("WebBrowser carregado e pronto");
-        }
-
-        private void SetupMoveEvents()
-        {
-            if (webBrowser1.Document != null && webBrowser1.Document.Body != null)
-            {
-                // Adicionar eventos de mouse para todo o documento
-                webBrowser1.Document.MouseDown += Document_MouseDown;
-                webBrowser1.Document.MouseMove += Document_MouseMove;
-                webBrowser1.Document.MouseUp += Document_MouseUp;
-
-                // Adicionar estilo para cursor de movimento
-                webBrowser1.Document.InvokeScript("eval", new object[] { @"
-                    document.body.style.cursor = 'move';
-                    // Prevenir seleção de texto durante o arrasto
-                    document.body.style.userSelect = 'none';
-                    document.body.style.webkitUserSelect = 'none';
-                    document.body.style.mozUserSelect = 'none';
-                    document.body.style.msUserSelect = 'none';
-                " });
-            }
-        }
-
-        private void Document_MouseDown(object sender, HtmlElementEventArgs e)
-        {
-            // Verificar se não é um clique em botão
-            HtmlElement target = e.ToElement;
-            while (target != null)
-            {
-                if (target.TagName.ToLower() == "button")
-                {
-                    return; // Não iniciar arrasto se for clique em botão
-                }
-                target = target.Parent;
-            }
-
-            isDragging = true;
-            dragStartPoint = new Point(e.MousePosition.X + this.Left, e.MousePosition.Y + this.Top);
-            webBrowser1.Document.InvokeScript("eval", new object[] { "document.body.style.cursor = 'grabbing';" });
-        }
-
-        private void Document_MouseMove(object sender, HtmlElementEventArgs e)
-        {
-            if (isDragging)
-            {
-                int newX = e.MousePosition.X + this.Left;
-                int newY = e.MousePosition.Y + this.Top;
-
-                int deltaX = newX - dragStartPoint.X;
-                int deltaY = newY - dragStartPoint.Y;
-
-                this.Location = new Point(this.Left + deltaX, this.Top + deltaY);
-                dragStartPoint = new Point(newX, newY);
-            }
-        }
-
-        private void Document_MouseUp(object sender, HtmlElementEventArgs e)
-        {
-            isDragging = false;
-            webBrowser1.Document.InvokeScript("eval", new object[] { "document.body.style.cursor = 'move';" });
-        }
-
-        private void LoadHtmlContent()
-        {
-            string htmlContent = GetCompleteHtmlContent();
-            webBrowser1.DocumentText = htmlContent;
-        }
-
-        private string GetCompleteHtmlContent()
-        {
-            string css = GetCssStyles();
-            string javascript = GetJavaScriptCode();
-
-            return $@"<!DOCTYPE html>
+        // ═════════════════════════════════════════════════════════════════════
+        // HTML
+        // ═════════════════════════════════════════════════════════════════════
+        private string BuildHtml() =>
+$@"<!DOCTYPE html>
 <html>
 <head>
-    <meta charset='UTF-8'>
-    <meta http-equiv='X-UA-Compatible' content='IE=edge'>
-    <style>{css}</style>
+<meta charset='UTF-8'>
+<style>{BuildCss()}</style>
 </head>
 <body>
-    <div class='pomodoro-widget' id='pomodoroWidget'>
-        <div class='pomodoro-header' id='pomodoroHeader'>
-            <div class='pomodoro-title' id='pomodoroTitle'>
-                <span class='pomodoro-task-title' id='pomodoroTaskTitle'>Pomodoro Widget</span>
-                <span class='pomodoro-time-mini' id='pomodoroTimeMini'>25:00</span>
-            </div>
-            <div class='pomodoro-controls'>
-                <button class='pomodoro-minimize' id='pomodoroMinimize' onclick='window.external.MinimizeWidget()'>▼</button>
-                <button class='pomodoro-toggle' id='pomodoroToggle' onclick='window.external.ToggleTimer()'>Iniciar</button>
-                <button class='pomodoro-close' id='pomodoroClose' onclick='window.external.CloseApp()'>✕</button>
-            </div>
-        </div>
-        <div class='pomodoro-content' id='pomodoroContent'>
-            <div class='pomodoro-timer' id='pomodoroTimer'>25:00</div>
-            <div class='pomodoro-session-info'>
-                <span class='pomodoro-session-type-badge' id='pomodoroSessionType'>Foco</span>
-            </div>
-            <div class='pomodoro-progress'>
-                <div class='pomodoro-progress-bar' id='pomodoroProgressBar' style='width: 0%'></div>
-            </div>
-            <div class='pomodoro-stats'>
-                <div class='pomodoro-session'>
-                    <div class='pomodoro-session-label'>Sessão Atual</div>
-                    <div class='pomodoro-session-value' id='currentSession'>00:00:00</div>
-                </div>
-                <div class='pomodoro-session'>
-                    <div class='pomodoro-session-label'>Total Hoje</div>
-                    <div class='pomodoro-session-value' id='totalToday'>00:00:00</div>
-                </div>
-            </div>
-            <div class='task-info' id='taskInfo'>
-                Tarefa atual: Nenhuma
-            </div>
-        </div>
+<div class='widget' id='pomodoroWidget'>
+  <div class='header' id='pomodoroHeader'>
+    <div class='title'>
+      <span class='task-title' id='pomodoroTaskTitle'>Pomodoro Widget</span>
+      <span class='time-mini' id='pomodoroTimeMini'>60:00</span>
     </div>
-    <script>{javascript}</script>
-</body>
-</html>";
-        }
-        private string GetCssStyles()
-        {
-            return @"
-* { 
-    margin: 0; 
-    padding: 0; 
-    box-sizing: border-box; 
-}
-body { 
-    margin: 0; 
-    padding: 0; 
-    background: #1E1E1E; 
-    color: white; 
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-    overflow: hidden; 
-    height: 100vh;
-    cursor: move;
-    -webkit-user-select: none;
-    -moz-user-select: none;
-    -ms-user-select: none;
-    user-select: none;
-    border-radius: 15px;
-}
-.pomodoro-widget { 
-    background: #1E1E1E; 
-    height: 100vh; 
-    display: flex; 
-    flex-direction: column;
-    border-radius: 15px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
-    overflow: hidden;
-}
-.pomodoro-header { 
-    background: #2D2D2D; 
-    padding: 12px 15px; 
-    display: flex; 
-    justify-content: space-between; 
-    align-items: center; 
-    border-bottom: 1px solid #404040; 
-    user-select: none;
-    cursor: move;
-    border-top-left-radius: 15px;
-    border-top-right-radius: 15px;
-    position: relative;
-    overflow: hidden;
+    <div class='controls'>
+      <button class='btn-burger' id='btnBurger' onclick='togglePanel()' data-tip='Configurações'>&#9776;</button>
+      <button class='btn-min'   id='pomodoroMinimize' onclick='hostCall(""MinimizeWidget"")'>▼</button>
+      <button class='btn-start' id='pomodoroToggle'   onclick='toggleTimer()'>Iniciar</button>
+      <button class='btn-close' id='pomodoroClose'    onclick='hostCall(""CloseApp"")'>✕</button>
+    </div>
+  </div>
+  <div class='content' id='pomodoroContent'>
+    <div class='timer-row'>
+      <div class='timer' id='pomodoroTimer'>60:00</div>
+      <div class='hg-wrap' id='hourglassContainer' onclick='onHourglassClick()' data-tip='Clique para sincronizar agora'>
+        <svg viewBox='0 0 28 44' width='28' height='44'>
+          <line x1='5' y1='2' x2='23' y2='2' stroke='#555' stroke-width='1.5' stroke-linecap='round'/>
+          <line x1='5' y1='42' x2='23' y2='42' stroke='#555' stroke-width='1.5' stroke-linecap='round'/>
+          <path d='M 7,4 L 7,17 Q 7,22 14,24 Q 21,22 21,17 L 21,4' fill='none' stroke='#3a3a3a' stroke-width='1'/>
+          <path d='M 7,40 L 7,27 Q 7,22 14,20 Q 21,22 21,27 L 21,40' fill='none' stroke='#3a3a3a' stroke-width='1'/>
+          <clipPath id='hgTopClip'><path d='M 7,4 L 7,17 Q 7,22 14,24 Q 21,22 21,17 L 21,4 Z'/></clipPath>
+          <clipPath id='hgBotClip'><path d='M 7,40 L 7,27 Q 7,22 14,20 Q 21,22 21,27 L 21,40 Z'/></clipPath>
+          <rect id='hgTopSand' x='7' y='4'   width='14' height='20' clip-path='url(#hgTopClip)' fill='#7b1fa2' opacity='0.7'/>
+          <rect id='hgStream'  x='13.4' y='21' width='1.2' height='5' rx='0.6' fill='#7b1fa2' opacity='0'/>
+          <rect id='hgBotSand' x='7' y='40'  width='14' height='0'  clip-path='url(#hgBotClip)' fill='#7b1fa2' opacity='0.7'/>
+        </svg>
+        <div class='sync-pulse' id='syncPulse'></div>
+      </div>
+      <span class='session-badge' id='pomodoroSessionType' style='display:none'>Descanso</span>
+    </div>
+    <div id='gradeMount'></div>
+    <div class='progress'><div class='progress-bar' id='pomodoroProgressBar' style='width:0%'></div></div>
+    <div class='stats'>
+      <div class='stat'><div class='lbl'>Sessão Atual</div><div class='val' id='currentSession'>00:00:00</div></div>
+      <div class='stat' id='pauseStatBlock' style='display:none'><div class='lbl' id='pauseStatLabel'>Desvio</div><div class='val' id='pauseElapsed' style='color:#7b1fa2'>00:00</div></div>
+      <div class='stat'><div class='lbl'>Total Hoje</div><div class='val' id='totalToday'>00:00:00</div></div>
+    </div>
+    <div class='task-info' id='taskInfo'>Tarefa atual: Nenhuma</div>
+  </div>
+</div>
+
+<!-- Painel lateral de configurações -->
+<div id='settingsPanel' class='settings-panel'>
+  <div class='sp-header'>
+    <span>⚙ Configurações</span>
+    <button class='sp-close' onclick='togglePanel()'>✕</button>
+  </div>
+  <div class='sp-body'>
+
+    <div class='sp-section'>Intervalos de atualização</div>
+
+    <div class='sp-row'>
+      <label class='sp-label' for='cfgSync'>Sync principal <span class='sp-unit'>(seg)</span></label>
+      <input class='sp-input' id='cfgSync' type='number' min='5' max='300' step='5' value='15'/>
+    </div>
+
+    <div class='sp-row'>
+      <label class='sp-label' for='cfgSave'>Salvar estudo <span class='sp-unit'>(seg)</span></label>
+      <input class='sp-input' id='cfgSave' type='number' min='10' max='600' step='10' value='30'/>
+    </div>
+
+    <div class='sp-row'>
+      <label class='sp-label' for='cfgMinMin'>Mínimo p/ salvar <span class='sp-unit'>(min)</span></label>
+      <input class='sp-input' id='cfgMinMin' type='number' min='0.1' max='5' step='0.1' value='0.5'/>
+    </div>
+
+    <div class='sp-section' style='margin-top:14px;'>Temporizador</div>
+
+    <div class='sp-row'>
+      <label class='sp-label' for='cfgFoco'>Foco <span class='sp-unit'>(min)</span></label>
+      <input class='sp-input' id='cfgFoco' type='number' min='1' max='120' step='1' value='60'/>
+    </div>
+
+    <div class='sp-row'>
+      <label class='sp-label' for='cfgBreak'>Descanso <span class='sp-unit'>(min)</span></label>
+      <input class='sp-input' id='cfgBreak' type='number' min='1' max='60' step='1' value='15'/>
+    </div>
+
+    <button class='sp-save' onclick='saveSettings()'>Salvar</button>
+    <div class='sp-feedback' id='spFeedback'></div>
+  </div>
+</div>
+<div id='settingsOverlay' class='settings-overlay' onclick='togglePanel()'></div>
+
+<!-- Overlay desvio -->
+<div id='desvioOverlay' style='display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;'>
+  <div style='position:absolute;top:50%;left:50%;width:300px;margin:-110px 0 0 -150px;background:#1a1a2e;border:2px solid #fc8181;border-radius:10px;padding:16px 18px;'>
+    <div style='color:#fc8181;font-size:12px;font-weight:700;margin-bottom:4px;'>⚠ MOTIVO DO DESVIO</div>
+    <div id='desvioOverlayDur' style='color:#feb2b2;font-size:11px;margin-bottom:10px;'></div>
+    <input id='desvioMotivoInput' type='text' placeholder='Ex: reuniao, lanche...' maxlength='200'
+      onkeydown='if(event.key===""Enter"")confirmDesvioMotivo();'
+      style='width:100%;background:#2d2d4e;border:1px solid #fc8181;border-radius:6px;padding:7px 9px;color:#fff;font-size:12px;font-family:inherit;box-sizing:border-box;'/>
+    <button onclick='confirmDesvioMotivo()' style='margin-top:10px;width:100%;background:#c53030;color:#fff;border:none;border-radius:6px;padding:8px;font-size:12px;font-weight:700;cursor:pointer;'>Confirmar e Retomar</button>
+  </div>
+</div>
+
+<!-- Tooltip -->
+<div id='customTooltip' style='display:none;position:fixed;z-index:99999;pointer-events:none;max-width:180px;background:#2a1040;border:1px solid #7b1fa2;border-radius:6px;padding:5px 9px;font-size:10px;font-weight:600;color:#e0c8f0;box-shadow:0 4px 16px rgba(0,0,0,.6);line-height:1.4;'></div>
+
+<script>{BuildJs()}</script>
+</body></html>";
+
+        // ═════════════════════════════════════════════════════════════════════
+        // CSS
+        // ═════════════════════════════════════════════════════════════════════
+        private string BuildCss() => @"
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#1E1E1E;color:#fff;font-family:'Segoe UI',sans-serif;overflow:hidden;height:100vh;user-select:none;border-radius:15px;}
+.widget{background:#1E1E1E;height:100vh;display:flex;flex-direction:column;border-radius:15px;border:1px solid rgba(255,255,255,.1);box-shadow:0 10px 40px rgba(0,0,0,.5);overflow:hidden;}
+.header{background:#2D2D2D;padding:12px 15px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #404040;cursor:move;border-radius:15px 15px 0 0;position:relative;overflow:hidden;}
+.header.running::before{content:'';width:calc(100% + 2px);height:calc(100% - 12px);position:absolute;top:6px;left:0;background:#353638;z-index:1;animation:bTB 2s infinite;}
+.header.running::after{content:'';width:calc(100% - 12px);height:calc(100% + 4px);position:absolute;top:-2px;left:6px;background:#353638;z-index:1;animation:bLR 2s infinite;}
+@keyframes bTB{0%,100%{transform:scaleY(1)}50%{transform:scaleY(0)}}
+@keyframes bLR{0%,100%{transform:scaleX(1)}50%{transform:scaleX(0)}}
+.header.running.break::before,.header.running.break::after{background:#4caf50;}
+.title{font-weight:600;color:#e0e0e0;font-size:14px;display:flex;align-items:center;gap:8px;position:relative;z-index:2;}
+.task-title{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.time-mini{background:#7b1fa2;color:#fff;padding:4px 8px;border-radius:12px;font-size:11px;font-weight:bold;font-family:monospace;}
+.time-mini.break{background:#4caf50;}
+.controls{display:flex;gap:10px;align-items:center;position:relative;z-index:2;}
+.btn-start{background:#7b1fa2;border:none;color:#fff;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;transition:all .3s;margin-left:8px;}
+.btn-start:hover{background:#8e24aa;transform:translateY(-1px);}
+.btn-start.running{background:#e53935;}
+.btn-min,.btn-close{background:rgba(255,255,255,.1);border:none;color:#abb2bf;width:24px;height:24px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold;margin-left:8px;transition:all .2s;}
+.btn-min:hover{background:rgba(255,255,255,.2);color:#fff;}
+.btn-close{background:rgba(244,67,54,.3);color:#ff6b6b;}
+.btn-close:hover{background:rgba(244,67,54,.5);color:#fff;}
+.content{padding:20px;flex:1;display:flex;flex-direction:column;gap:15px;}
+.timer-row{display:flex;align-items:center;justify-content:center;gap:12px;margin:10px 0;}
+.timer{font-size:48px;font-weight:bold;font-family:monospace;color:#7b1fa2;}
+.timer.break{color:#4caf50;}
+.hg-wrap{position:relative;cursor:pointer;opacity:.5;transition:opacity .3s,transform .2s;padding:4px;}
+.hg-wrap:hover{opacity:1;transform:scale(1.1);}
+.sync-pulse{position:absolute;top:50%;left:50%;width:0;height:0;border-radius:50%;background:rgba(123,31,162,.3);transform:translate(-50%,-50%);pointer-events:none;opacity:0;}
+.sync-pulse.active{animation:pulse .6s ease-out forwards;}
+@keyframes pulse{0%{width:0;height:0;opacity:.6}100%{width:60px;height:60px;opacity:0}}
+.session-badge{padding:4px 12px;border-radius:20px;background:#7b1fa2;color:#fff;font-size:12px;font-weight:bold;}
+.session-badge.break{background:#4caf50;}
+.progress{height:6px;background:#404040;border-radius:3px;margin:15px 0;overflow:hidden;}
+.progress-bar{height:100%;background:#7b1fa2;border-radius:3px;transition:width 1s linear;}
+.progress-bar.break{background:#4caf50;}
+.stats{display:flex;justify-content:space-between;}
+.stat{text-align:center;}
+.lbl{font-size:11px;color:#7f848e;margin-bottom:2px;}
+.val{font-size:14px;font-weight:bold;color:#7b1fa2;}
+.task-info{text-align:center;font-size:10px;color:#e0e0e0;background:rgba(123,31,162,.1);padding:8px;border-radius:8px;border:1px solid rgba(123,31,162,.3);}
+#gradeMount{width:100%;overflow:hidden;margin-top:2px;}
+/* -- Hamburguer -- */
+.btn-burger{background:none;border:none;color:rgba(255,255,255,.35);font-size:15px;cursor:pointer;padding:2px 4px;border-radius:4px;transition:color .2s,background .2s;line-height:1;margin-right:2px;}
+.btn-burger:hover{color:rgba(255,255,255,.8);background:rgba(255,255,255,.08);}
+/* -- Painel lateral -- */
+.settings-panel{position:fixed;top:0;right:-260px;width:250px;height:100%;background:#1a1a2e;border-left:1px solid rgba(123,31,162,.5);z-index:8000;transition:right .28s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;box-shadow:-4px 0 24px rgba(0,0,0,.5);}
+.settings-panel.open{right:0;}
+.settings-overlay{position:fixed;inset:0;background:rgba(0,0,0,.0);z-index:7999;display:none;cursor:pointer;}
+.settings-overlay.open{display:block;}
+.sp-header{display:flex;justify-content:space-between;align-items:center;padding:13px 14px 11px;border-bottom:1px solid rgba(123,31,162,.4);color:#ce93d8;font-size:12px;font-weight:700;letter-spacing:.5px;}
+.sp-close{background:none;border:none;color:#7f848e;font-size:14px;cursor:pointer;padding:0 2px;transition:color .2s;}
+.sp-close:hover{color:#ff6b6b;}
+.sp-body{padding:14px 14px 10px;overflow-y:auto;flex:1;}
+.sp-section{font-size:9px;font-weight:700;letter-spacing:1px;color:#7b1fa2;text-transform:uppercase;margin-bottom:10px;border-bottom:1px solid rgba(123,31,162,.25);padding-bottom:4px;}
+.sp-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:8px;}
+.sp-label{font-size:11px;color:#b0b8c1;flex:1;line-height:1.3;}
+.sp-unit{color:#555;font-size:9px;}
+.sp-input{width:64px;background:#0d0d1a;border:1px solid rgba(123,31,162,.4);border-radius:5px;color:#e0c8f0;font-size:12px;padding:4px 7px;text-align:right;font-family:monospace;transition:border .2s;}
+.sp-input:focus{outline:none;border-color:#7b1fa2;}
+.sp-save{width:100%;margin-top:16px;padding:8px;background:#7b1fa2;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;transition:background .2s;}
+.sp-save:hover{background:#8e24aa;}
+.sp-feedback{font-size:10px;color:#a5d6a7;text-align:center;margin-top:8px;min-height:14px;}";
+
+        // ═════════════════════════════════════════════════════════════════════
+        // JAVASCRIPT — todas as 10 requests como fetch()
+        // ═════════════════════════════════════════════════════════════════════
+        private string BuildJs() => @"
+// ── Configuração ─────────────────────────────────────────────────────────────
+var API   = 'https://sistemadetarefas.online';
+var UID   = 2;
+var X_KEY = 'STI_DESKTOP_K3Y_2025_XrQ9mVpL';
+
+// ── Helper C# ─────────────────────────────────────────────────────────────────
+function hostCall(method) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    try { var h = window.chrome.webview.hostObjects.sync.external; h[method].apply(h, args); }
+    catch(e) { console.error('[hostCall] ' + method + ':', e); }
 }
 
-/* Efeito de borda animada infinita */
-.pomodoro-header.border-animation::before {
-    content: '';
-    width: calc(100% + 2px);
-    height: calc(100% - 12px);
-    position: absolute;
-    top: 6px;
-    left: 0px;
-    background: #353638;
-    transition: transform 0.5s ease-in-out;
-    transform: scaleY(1);
-    z-index: 1;
-    animation: borderTopBottom 2s infinite;
-}
-
-.pomodoro-header.border-animation::after {
-    content: '';
-    width: calc(100% - 12px);
-    height: calc(100% + 4px);
-    position: absolute;
-    top: -2px;
-    left: 6px;
-    background: #353638;
-    transition: transform 0.5s ease-in-out;
-    transform: scaleX(1);
-    z-index: 1;
-    animation: borderLeftRight 2s infinite;
-}
-
-@keyframes borderTopBottom {
-    0%, 100% {
-        transform: scaleY(1);
-    }
-    50% {
-        transform: scaleY(0);
-    }
-}
-
-@keyframes borderLeftRight {
-    0%, 100% {
-        transform: scaleX(1);
-    }
-    50% {
-        transform: scaleX(0);
-    }
-}
-
-/* Efeito para modo break */
-.pomodoro-header.border-animation.break::before,
-.pomodoro-header.border-animation.break::after {
-    background: #4caf50;
-}
-
-.pomodoro-title { 
-    font-weight: 600; 
-    color: #e0e0e0; 
-    font-size: 14px; 
-    display: flex; 
-    align-items: center; 
-    gap: 8px; 
-    position: relative;
-    z-index: 2;
-}
-.pomodoro-task-title { 
-    max-width: 120px; 
-    overflow: hidden; 
-    text-overflow: ellipsis; 
-    white-space: nowrap; 
-}
-.pomodoro-time-mini { 
-    background: #7b1fa2; 
-    color: white; 
-    padding: 4px 8px; 
-    border-radius: 12px; 
-    font-size: 11px; 
-    font-weight: bold; 
-    font-family: 'Consolas', 'Monaco', monospace; 
-}
-.pomodoro-time-mini.break { 
-    background: #4caf50; 
-}
-.pomodoro-controls { 
-    display: flex; 
-    gap: 10px; 
-    align-items: center; 
-    position: relative;
-    z-index: 2;
-}
-.pomodoro-toggle { 
-    background: #7b1fa2; 
-    border: none; 
-    color: white; 
-    padding: 8px 16px; 
-    border-radius: 6px; 
-    cursor: pointer; 
-    font-size: 12px; 
-    font-weight: 600; 
-    transition: all 0.3s ease; 
-    margin-left: 8px;
-}
-.pomodoro-toggle:hover { 
-    background: #8e24aa; 
-    transform: translateY(-1px); 
-}
-.pomodoro-toggle.running { 
-    background: #e53935; 
-}
-.pomodoro-minimize, .pomodoro-maximize, .pomodoro-close { 
-    background: rgba(255, 255, 255, 0.1); 
-    border: none; 
-    color: #abb2bf; 
-    width: 24px; 
-    height: 24px; 
-    border-radius: 4px; 
-    cursor: pointer; 
-    display: flex; 
-    align-items: center; 
-    justify-content: center; 
-    font-size: 12px; 
-    transition: all 0.2s ease; 
-    font-weight: bold;
-    margin-left: 8px;
-
-
-}
-.pomodoro-minimize:hover, .pomodoro-maximize:hover { 
-    background: rgba(255, 255, 255, 0.2); 
-    color: white; 
-}
-.pomodoro-close { 
-    background: rgba(244, 67, 54, 0.3); 
-    color: #ff6b6b; 
-}
-.pomodoro-close:hover { 
-    background: rgba(244, 67, 54, 0.5); 
-    color: white; 
-}
-.pomodoro-content { 
-    padding: 20px; 
-    flex: 1; 
-    display: flex; 
-    flex-direction: column; 
-    gap: 15px; 
-}
-.pomodoro-timer { 
-    font-size: 48px; 
-    font-weight: bold; 
-    text-align: center; 
-    font-family: 'Consolas', 'Monaco', monospace; 
-    color: #7b1fa2; 
-    margin: 10px 0; 
-}
-.pomodoro-timer.break { 
-    color: #4caf50; 
-}
-.pomodoro-session-info { 
-    text-align: center; 
-    font-size: 14px; 
-    color: #7f848e; 
-}
-.pomodoro-session-type-badge { 
-    display: inline-block; 
-    padding: 4px 12px; 
-    border-radius: 20px; 
-    background: #7b1fa2; 
-    color: white; 
-    font-size: 12px; 
-    font-weight: bold; 
-}
-.pomodoro-session-type-badge.break { 
-    background: #4caf50; 
-}
-.pomodoro-progress { 
-    height: 6px; 
-    background: #404040; 
-    border-radius: 3px; 
-    margin: 15px 0; 
-    overflow: hidden; 
-}
-.pomodoro-progress-bar { 
-    height: 100%; 
-    background: #7b1fa2; 
-    border-radius: 3px; 
-    transition: width 1s linear; 
-}
-.pomodoro-progress-bar.break { 
-    background: #4caf50; 
-}
-.pomodoro-stats { 
-    display: flex; 
-    justify-content: space-between; 
-    font-size: 12px; 
-    color: #7f848e; 
-}
-.pomodoro-session { 
-    text-align: center; 
-}
-.pomodoro-session-label { 
-    font-size: 11px; 
-    color: #7f848e; 
-    margin-bottom: 2px; 
-}
-.pomodoro-session-value { 
-    font-size: 14px; 
-    font-weight: bold; 
-    color: #7b1fa2; 
-}
-.task-info { 
-    text-align: center; 
-    font-size: 10px; 
-    color: #e0e0e0; 
-    background: rgba(123, 31, 162, 0.1); 
-    padding: 8px; 
-    border-radius: 8px; 
-    border: 1px solid rgba(123, 31, 162, 0.3); 
-}";
-        }
-
-        private string GetJavaScriptCode()
-        {
-            return @"
-// Variáveis globais para o widget
-var isRunning = false;
-var currentTime = 60 * 60; // 25 minutos
-var isBreakTime = false;
+// ── Estado do timer ───────────────────────────────────────────────────────────
+var isRunning             = false;
+var currentTime           = 3600;
+var isBreakTime           = false;
 var currentSessionSeconds = 0;
-var totalTodaySeconds = 0;
-var updateInterval = null;
+var totalTodaySeconds     = 0;
+var tickInterval          = null;
 
-// Inicialização
+// ── Estado da tarefa ──────────────────────────────────────────────────────────
+var studyingTaskId      = null;
+var studyingTaskName    = 'Nenhuma tarefa';
+var studyingUserId      = UID;
+var studyingProjectId   = null;
+var studyingProjectName = '';
+
+// ── Acúmulo para salvar ────────────────────────────────────────────────────────
+var accumulatedSeconds  = 0;
+var lastSavedSessionSec = 0;
+
+// ── Pausas/Desvios ────────────────────────────────────────────────────────────
+var pauseStartTs         = null;
+var pauseDisplayInterval = null;
+var pendingDesvio        = null;
+
+// ── Cooldowns duplicata ────────────────────────────────────────────────────────
+var processedSessions  = {};
+var processedQErradas  = {};
+var processedAnotacoes = {};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// INIT
+// ═════════════════════════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', function() {
-    initializeWidget();
+    // Drag header → C#
+    var hdr = document.getElementById('pomodoroHeader');
+    if (hdr) {
+        hdr.addEventListener('mousedown', function(ev) {
+            if (ev.target && ev.target.tagName.toLowerCase() === 'button') return;
+            hostCall('StartDrag');
+        });
+    }
+    document.querySelectorAll('button').forEach(function(b) {
+        b.addEventListener('mousedown', function(e) { e.stopPropagation(); });
+    });
+
     loadState();
     updateDisplay();
+    initHourglass();
+    gradeRefresh();
+    initTooltip();
+
+    // Timers gerenciados pelo cfg (configuráveis pelo painel)
+    loadSettings(); // carrega cfg do localStorage e inicia _syncTimer/_saveTimer
+
+    // Acumula segundos a cada 1s (substitui SecondsUpdateTimer do C#)
+    setInterval(function() {
+        if (!isRunning || isBreakTime || !studyingTaskId) return;
+        var diff = currentSessionSeconds - lastSavedSessionSec;
+        if (diff > 0) { accumulatedSeconds += diff; lastSavedSessionSec = currentSessionSeconds; }
+    }, 1000);
+
+    console.log('[INIT] Widget pronto — 10 requests via fetch()');
 });
 
-function initializeWidget() {
-    console.log('Widget inicializado - Com efeito de borda animada');
+// ═════════════════════════════════════════════════════════════════════════════
+// REQUEST 1 — GET pomodoro_sync.php   (sync principal, 15s)
+// ═════════════════════════════════════════════════════════════════════════════
+async function syncCheck() {
+    try {
+        var resp = await fetch(API + '/pomodoro_sync.php?user_id=' + UID);
+        var data = await resp.json();
+        if (!data.success || !data.data) return;
+        var d = data.data;
+
+        if (d.taskIdResponderQErradas && shouldProcess(processedQErradas,  d.taskIdResponderQErradas))
+            await fetchQuestoesErradas();                       // REQUEST 2 + 8
+
+        if (d.taskIdAbrirAnotacoes   && shouldProcess(processedAnotacoes, d.taskIdAbrirAnotacoes))
+            await fetchAnotacoes();                             // REQUEST 3 + 9
+
+        if (d.sessionId              && shouldProcess(processedSessions,  d.sessionId))
+            await fetchSession(d.sessionId);                   // REQUEST 4 + 7
+
+        if (d.source === 'website')
+            updateStudyingTask(d);
+    } catch(e) { console.error('[SYNC] Erro:', e); }
 }
 
-function toggleTimer() {
-    if (isRunning) {
-        stopTimer();
-    } else {
-        startTimer();
-    }
-    saveState();
+// ═════════════════════════════════════════════════════════════════════════════
+// REQUEST 2 — GET get_urls_questoes_erradas
+// REQUEST 8 — POST clear_task_responder_q_erradas
+// ═════════════════════════════════════════════════════════════════════════════
+async function fetchQuestoesErradas() {
+    try {
+        var resp = await fetch(API + '/pomodoro_sync.php?action=get_urls_questoes_erradas&user_id=' + UID);
+        var data = await resp.json();
+        if (data.success && data.urls) {
+            data.urls.forEach(function(u) { hostCall('OpenLink', u.url); });
+            console.log('[Q_ERRADAS] ' + data.urls.length + ' URLs abertas');
+        }
+        await postAction({ action: 'clear_task_responder_q_erradas' });
+    } catch(e) { console.error('[Q_ERRADAS] Erro:', e); }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REQUEST 3 — GET get_anotacoes_da_task
+// REQUEST 9 — POST clear_task_abrir_anotacoes
+// ═════════════════════════════════════════════════════════════════════════════
+async function fetchAnotacoes() {
+    try {
+        var resp = await fetch(API + '/pomodoro_sync.php?action=get_anotacoes_da_task&user_id=' + UID);
+        var data = await resp.json();
+        if (data.success && data.urls) {
+            data.urls.forEach(function(u) { hostCall('OpenLink', u.url); });
+            console.log('[ANOTACOES] ' + data.urls.length + ' URLs abertas');
+        }
+        await postAction({ action: 'clear_task_abrir_anotacoes', user_id: UID });
+    } catch(e) { console.error('[ANOTACOES] Erro:', e); }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REQUEST 4 — GET save_session.php get_session
+// REQUEST 7 — POST clear_session_id
+// ═════════════════════════════════════════════════════════════════════════════
+async function fetchSession(sessionId) {
+    try {
+        var resp = await fetch(API + '/save_session.php?action=get_session&id=' + sessionId);
+        var data = await resp.json();
+        if (data.success && data.urls) {
+            data.urls.forEach(function(u) { hostCall('OpenLink', u.url); });
+            console.log('[SESSION] ' + data.urls.length + ' URLs abertas');
+        }
+        await postAction({ action: 'clear_session_id' });
+    } catch(e) { console.error('[SESSION] Erro:', e); }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REQUEST 5 — POST save_estudo_registro
+// ═════════════════════════════════════════════════════════════════════════════
+async function saveEstudoRegistro(minutos) {
+    if (!studyingTaskId || minutos <= 0) return;
+    try {
+        var resp = await fetch(API + '/pomodoro_sync.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action:                  'save_estudo_registro',
+                usuario_id:              studyingUserId,
+                minutos_estudados:       parseFloat(minutos.toFixed(2)),
+                task_name:               studyingTaskName,
+                tarefa_id:               studyingTaskId,
+                project_name:            studyingProjectName,
+                data_estudo:             dateToday(),
+                data_criacao_computador: dateNow()
+            })
+        });
+        var data = await resp.json();
+        if (data.success) {
+            gradeAddMinutos(new Date().getHours(), minutos);
+            console.log('[SAVE_ESTUDO] ' + minutos.toFixed(2) + ' min — ID:' + data.insert_id);
+        } else { console.error('[SAVE_ESTUDO]', data.message); }
+    } catch(e) { console.error('[SAVE_ESTUDO] fetch erro:', e); }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REQUEST 6 — POST save_pausa
+// ═════════════════════════════════════════════════════════════════════════════
+async function savePausa(duracaoMinutos, tipo, motivo) {
+    if (!studyingTaskId) return;
+    var fim = new Date();
+    var ini = new Date(fim.getTime() - duracaoMinutos * 60000);
+    try {
+        var resp = await fetch(API + '/pomodoro_sync.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action:          'save_pausa',
+                usuario_id:      studyingUserId,
+                tarefa_id:       studyingTaskId,
+                task_name:       studyingTaskName,
+                project_name:    studyingProjectName,
+                data_estudo:     dateToday(),
+                inicio_pausa:    fmtDateTime(ini),
+                fim_pausa:       fmtDateTime(fim),
+                duracao_minutos: parseFloat(duracaoMinutos.toFixed(2)),
+                tipo:            tipo,
+                motivo:          motivo || ''
+            })
+        });
+        var data = await resp.json();
+        if (data.success) console.log('[PAUSA] ' + tipo + ' ' + duracaoMinutos.toFixed(1) + 'min — ID:' + data.insert_id);
+        else              console.error('[PAUSA]', data.message);
+    } catch(e) { console.error('[PAUSA] fetch erro:', e); }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REQUEST 7,8,9 — POST clear_* (helper genérico)
+// ═════════════════════════════════════════════════════════════════════════════
+async function postAction(payload) {
+    try {
+        await fetch(API + '/pomodoro_sync.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+    } catch(e) { console.error('[POST_ACTION]', e); }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REQUEST 10 — POST update_tarefa_segundos
+// ═════════════════════════════════════════════════════════════════════════════
+async function updateTarefaSegundos(segundos) {
+    if (!studyingTaskId || segundos <= 0) return;
+    try {
+        var resp = await fetch(API + '/tarefas.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-App-Key': X_KEY, 'X-Client': 'PomodoroWidget' },
+            body: JSON.stringify({
+                action:    'update_tarefa_segundos',
+                id:        studyingTaskId,
+                segundos:  segundos,
+                timestamp: Date.now().toString()
+            })
+        });
+        var data = await resp.json();
+        console.log('[UPDATE_SEG] +' + segundos + 's tarefa ' + studyingTaskId + ' ok=' + data.success);
+    } catch(e) { console.error('[UPDATE_SEG] fetch erro:', e); }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SALVAR ACUMULADO (dispara REQUEST 5 + 10 a cada 30s)
+// ═════════════════════════════════════════════════════════════════════════════
+async function saveTimeAcc() {
+    if (!studyingTaskId || accumulatedSeconds <= 0) return;
+    var minutos   = accumulatedSeconds / 60;
+    if (minutos < cfg.minMinutes) return;
+    var secToSave      = accumulatedSeconds;
+    accumulatedSeconds = 0;
+    console.log('[ACC] Salvando ' + minutos.toFixed(2) + ' min (' + secToSave + 's)');
+    await Promise.all([
+        saveEstudoRegistro(minutos),
+        updateTarefaSegundos(secToSave)
+    ]);
+}
+
+// Chamado pelo C# ao fechar (OnFormClosing)
+async function onAppClosing() {
+    if (pauseStartTs !== null) {
+        var dur = (Date.now() - pauseStartTs) / 60000;
+        if (dur >= 1) await savePausa(dur, dur >= 30 ? 'desvio' : 'pausa', '');
+    }
+    await saveTimeAcc();
+    console.log('[CLOSE] Cleanup concluído');
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ATUALIZAR TAREFA
+// ═════════════════════════════════════════════════════════════════════════════
+function updateStudyingTask(d) {
+    if (!d.studyingTaskId) {
+        if (studyingTaskId) { saveTimeAcc(); studyingTaskId = null; setTaskTitle('Pomodoro Widget'); }
+        return;
+    }
+    if (d.studyingTaskId !== studyingTaskId) {
+        if (studyingTaskId && accumulatedSeconds > 0) saveTimeAcc();
+        studyingTaskId      = d.studyingTaskId;
+        studyingTaskName    = d.taskName    || 'Tarefa';
+        studyingUserId      = d.userId      || UID;
+        studyingProjectId   = d.projectId   || null;
+        studyingProjectName = d.projectName || '';
+        accumulatedSeconds  = 0;
+        lastSavedSessionSec = currentSessionSeconds;
+        currentSessionSeconds = 0;
+        setTaskTitle(studyingTaskName);
+        updateDisplay();
+        console.log('[TASK] ' + studyingTaskName + ' (ID:' + studyingTaskId + ')');
+    }
+}
+
+function setTaskTitle(name) {
+    var t = document.getElementById('pomodoroTaskTitle');
+    var i = document.getElementById('taskInfo');
+    if (t) t.textContent = name;
+    if (i) i.textContent = 'Tarefa atual: ' + name;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// TIMER
+// ═════════════════════════════════════════════════════════════════════════════
+function toggleTimer() { isRunning ? stopTimer() : startTimer(); saveState(); }
 
 function startTimer() {
+    if (pauseStartTs !== null) {
+        var dur = stopPauseDisplay();
+        if (dur >= 1) {
+            pendingDesvio = { dur: dur };
+            if (dur >= 10) { showDesvioOverlay(dur); return; }
+            sendPendingDesvio('');
+        } else { pendingDesvio = null; }
+    }
+    _startTick();
+}
+
+function _startTick() {
     isRunning = true;
-    var toggleBtn = document.getElementById('pomodoroToggle');
-    var header = document.getElementById('pomodoroHeader');
-    
-    if (toggleBtn) {
-        toggleBtn.textContent = 'Pausar';
-        toggleBtn.className = 'pomodoro-toggle running';
-    }
-    
-    // Ativar efeito de borda animada
-    if (header) {
-        header.classList.add('border-animation');
-        if (isBreakTime) {
-            header.classList.add('break');
-        }
-    }
-    
-    updateInterval = setInterval(function() {
-        tick();
-    }, 1000);
+    var btn = document.getElementById('pomodoroToggle');
+    var hdr = document.getElementById('pomodoroHeader');
+    if (btn) { btn.textContent = 'Pausar'; btn.className = 'btn-start running'; }
+    if (hdr) { hdr.classList.add('running'); if (isBreakTime) hdr.classList.add('break'); }
+    if (tickInterval) clearInterval(tickInterval);
+    tickInterval = setInterval(tick, 1000);
 }
 
 function stopTimer() {
     isRunning = false;
-    var toggleBtn = document.getElementById('pomodoroToggle');
-    var header = document.getElementById('pomodoroHeader');
-    
-    if (toggleBtn) {
-        toggleBtn.textContent = 'Iniciar';
-        toggleBtn.className = 'pomodoro-toggle';
-    }
-    
-    // Desativar efeito de borda animada
-    if (header) {
-        header.classList.remove('border-animation', 'break');
-    }
-    
-    if (updateInterval) {
-        clearInterval(updateInterval);
-        updateInterval = null;
-    }
+    var btn = document.getElementById('pomodoroToggle');
+    var hdr = document.getElementById('pomodoroHeader');
+    if (btn) { btn.textContent = 'Iniciar'; btn.className = 'btn-start'; }
+    if (hdr) hdr.classList.remove('running', 'break');
+    if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
+    if (!isBreakTime) { pauseStartTs = Date.now(); startPauseDisplay(); }
     saveState();
 }
 
 function tick() {
     if (currentTime > 0) {
         currentTime--;
-        
-        // APENAS ATUALIZAR CONTADORES SE NÃO FOR DESCANSO
-        if (!isBreakTime) {
-            currentSessionSeconds++;
-            totalTodaySeconds++;
-        }
-    } else {
-        handleTimerComplete();
-    }
+        if (!isBreakTime) { currentSessionSeconds++; totalTodaySeconds++; }
+    } else { handleTimerComplete(); }
     updateDisplay();
 }
 
 function handleTimerComplete() {
     stopTimer();
-    
-    var header = document.getElementById('pomodoroHeader');
-    
     if (!isBreakTime) {
-        isBreakTime = true;
-        currentTime = 15 * 60; // 15 minutos de descanso
-        showNotification('Hora do descanso!', 'Tempo de foco completo! Descanse um pouco.');
-        
-        // Atualizar efeito de borda para modo break
-        if (header) {
-            header.classList.add('break');
-        }
+        isBreakTime = true; currentTime = cfg.breakMinutes * 60;
+        var badge = document.getElementById('pomodoroSessionType');
+        if (badge) { badge.textContent = 'Descanso'; badge.className = 'session-badge break'; badge.style.display = ''; }
+        document.getElementById('pomodoroHeader').classList.add('break');
+        savePausa(15, 'pausa', 'descanso_pomodoro'); // REQUEST 6
     } else {
-        isBreakTime = false;
-        currentTime = 60 * 60; // 60 minutos de foco
-        showNotification('Volte ao trabalho!', 'Tempo de descanso terminou.');
-        
-        // Remover classe break do efeito de borda
-        if (header) {
-            header.classList.remove('break');
-        }
+        isBreakTime = false; currentTime = cfg.focoMinutes * 60;
+        var badge = document.getElementById('pomodoroSessionType');
+        if (badge) badge.style.display = 'none';
+        document.getElementById('pomodoroHeader').classList.remove('break');
     }
-    
-    updateDisplay();
-    saveState();
-    
-    // Reiniciar automaticamente após 1 segundo
-    setTimeout(function() {
-        startTimer();
+    updateHgMode(isBreakTime);
+    updateDisplay(); saveState();
+    setTimeout(_startTick, 1000);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PAUSA / DESVIO
+// ═════════════════════════════════════════════════════════════════════════════
+function startPauseDisplay() {
+    var block = document.getElementById('pauseStatBlock');
+    if (block) block.style.display = '';
+    if (pauseDisplayInterval) clearInterval(pauseDisplayInterval);
+    pauseDisplayInterval = setInterval(function() {
+        if (!pauseStartTs) return;
+        var e = Math.floor((Date.now() - pauseStartTs) / 1000);
+        var m = Math.floor(e / 60), s = e % 60;
+        var el = document.getElementById('pauseElapsed');
+        var lb = document.getElementById('pauseStatLabel');
+        if (!el) return;
+        el.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+        if      (m >= 30) { el.style.color = '#c53030'; if (lb) { lb.textContent = '⚠ Desvio'; lb.style.color = '#c53030'; } }
+        else if (m >= 10) { el.style.color = '#e53e3e'; if (lb) { lb.textContent = '⚠ Desvio'; lb.style.color = '#e53e3e'; } }
+        else              { el.style.color = '#7b1fa2'; if (lb) { lb.textContent = 'Desvio'; lb.style.color = ''; } }
     }, 1000);
 }
 
+function stopPauseDisplay() {
+    if (pauseDisplayInterval) { clearInterval(pauseDisplayInterval); pauseDisplayInterval = null; }
+    var block = document.getElementById('pauseStatBlock');
+    if (block) block.style.display = 'none';
+    if (!pauseStartTs) return 0;
+    var dur = (Date.now() - pauseStartTs) / 60000;
+    pauseStartTs = null;
+    return dur;
+}
+
+function showDesvioOverlay(dur) {
+    var o = document.getElementById('desvioOverlay');
+    var d = document.getElementById('desvioOverlayDur');
+    var i = document.getElementById('desvioMotivoInput');
+    if (!o) return;
+    if (d) d.textContent = Math.round(dur) + ' min de desvio registrado';
+    if (i) i.value = '';
+    o.style.display = 'block';
+    setTimeout(function() { if (i) i.focus(); }, 100);
+}
+
+function hideDesvioOverlay() {
+    var o = document.getElementById('desvioOverlay');
+    if (o) o.style.display = 'none';
+}
+
+function sendPendingDesvio(motivo) {
+    if (!pendingDesvio) return;
+    savePausa(pendingDesvio.dur, 'desvio', motivo); // REQUEST 6
+    pendingDesvio = null;
+}
+
+function confirmDesvioMotivo() {
+    var i = document.getElementById('desvioMotivoInput');
+    hideDesvioOverlay();
+    sendPendingDesvio(i ? i.value.trim() : '');
+    _startTick();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DISPLAY
+// ═════════════════════════════════════════════════════════════════════════════
 function updateDisplay() {
-    var timerElement = document.getElementById('pomodoroTimer');
-    var miniTimerElement = document.getElementById('pomodoroTimeMini');
-    var sessionTypeElement = document.getElementById('pomodoroSessionType');
-    var progressBar = document.getElementById('pomodoroProgressBar');
-    var header = document.getElementById('pomodoroHeader');
-    
-    if (!timerElement || !miniTimerElement || !sessionTypeElement || !progressBar) return;
-    
-    var minutes = Math.floor(currentTime / 60);
-    var seconds = currentTime % 60;
-    var timeString = minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
-    
-    timerElement.textContent = timeString;
-    miniTimerElement.textContent = timeString;
-    
-    if (isBreakTime) {
-        sessionTypeElement.textContent = 'Descanso';
-        sessionTypeElement.className = 'pomodoro-session-type-badge break';
-        timerElement.className = 'pomodoro-timer break';
-        progressBar.className = 'pomodoro-progress-bar break';
-        miniTimerElement.className = 'pomodoro-time-mini break';
-        
-        // Atualizar efeito de borda se estiver ativo
-        if (header && header.classList.contains('border-animation')) {
-            header.classList.add('break');
-        }
-    } else {
-        sessionTypeElement.textContent = 'Foco';
-        sessionTypeElement.className = 'pomodoro-session-type-badge';
-        timerElement.className = 'pomodoro-timer';
-        progressBar.className = 'pomodoro-progress-bar';
-        miniTimerElement.className = 'pomodoro-time-mini';
-        
-        // Remover classe break do efeito de borda se estiver ativo
-        if (header && header.classList.contains('border-animation')) {
-            header.classList.remove('break');
-        }
-    }
-    
-    var totalTime = isBreakTime ? (15 * 60) : (60 * 60);
-    var progress = ((totalTime - currentTime) / totalTime) * 100;
-    progressBar.style.width = progress + '%';
-    
-    var currentSessionElement = document.getElementById('currentSession');
-    var totalTodayElement = document.getElementById('totalToday');
-    
-    if (currentSessionElement) currentSessionElement.textContent = formatTime(currentSessionSeconds);
-    if (totalTodayElement) totalTodayElement.textContent = formatTime(totalTodaySeconds);
+    var m = Math.floor(currentTime / 60), s = currentTime % 60;
+    var str = m + ':' + (s < 10 ? '0' : '') + s;
+    var timer = document.getElementById('pomodoroTimer');
+    var mini  = document.getElementById('pomodoroTimeMini');
+    var bar   = document.getElementById('pomodoroProgressBar');
+    if (timer) { timer.textContent = str; timer.className = 'timer' + (isBreakTime ? ' break' : ''); }
+    if (mini)  { mini.textContent  = str; mini.className  = 'time-mini' + (isBreakTime ? ' break' : ''); }
+    var total = isBreakTime ? 900 : 3600;
+    if (bar)   { bar.style.width = (((total - currentTime) / total) * 100) + '%'; bar.className = 'progress-bar' + (isBreakTime ? ' break' : ''); }
+    var cs = document.getElementById('currentSession');
+    var tt = document.getElementById('totalToday');
+    if (cs) cs.textContent = fmtSec(currentSessionSeconds);
+    if (tt) tt.textContent = fmtSec(totalTodaySeconds);
 }
 
-function formatTime(seconds) {
-    var hrs = Math.floor(seconds / 3600);
-    var mins = Math.floor((seconds % 3600) / 60);
-    var secs = seconds % 60;
-    return (hrs < 10 ? '0' : '') + hrs + ':' + (mins < 10 ? '0' : '') + mins + ':' + (secs < 10 ? '0' : '') + secs;
+function fmtSec(s) {
+    var h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s % 60;
+    return (h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(ss<10?'0':'')+ss;
 }
 
-function showNotification(title, message) {
-    // Para WebBrowser, usar alert simples
-    alert(title + ': ' + message);
-}
-
-function toggleMinimize() {
-    var content = document.getElementById('pomodoroContent');
-    var minimizeBtn = document.getElementById('pomodoroMinimize');
-    
-    if (content && minimizeBtn) {
-        if (content.style.display === 'none') {
-            content.style.display = 'flex';
-            minimizeBtn.textContent = '▼';
-        } else {
-            content.style.display = 'none';
-            minimizeBtn.textContent = '▶';
-        }
-    }
-}
-
+// ═════════════════════════════════════════════════════════════════════════════
+// STATE
+// ═════════════════════════════════════════════════════════════════════════════
 function saveState() {
-    var state = {
-        currentTime: currentTime,
-        isBreakTime: isBreakTime,
-        isRunning: isRunning,
-        currentSessionSeconds: currentSessionSeconds,
-        totalTodaySeconds: totalTodaySeconds
-    };
-    
-    try {
-        localStorage.setItem('pomodoroWidgetState', JSON.stringify(state));
-    } catch(e) {
-        console.log('Erro ao salvar estado: ' + e.message);
-    }
+    try { localStorage.setItem('pState', JSON.stringify({ currentTime: currentTime, isBreakTime: isBreakTime, isRunning: isRunning, currentSessionSeconds: currentSessionSeconds, totalTodaySeconds: totalTodaySeconds })); }
+    catch(e) {}
 }
-
 function loadState() {
     try {
-        var saved = localStorage.getItem('pomodoroWidgetState');
-        if (saved) {
-            var state = JSON.parse(saved);
-            currentTime = state.currentTime || (60 * 60);
-            isBreakTime = state.isBreakTime || false;
-            currentSessionSeconds = state.currentSessionSeconds || 0;
-            totalTodaySeconds = state.totalTodaySeconds || 0;
-            
-            if (state.isRunning) {
-                startTimer();
-            }
-            
-            updateDisplay();
-        }
-    } catch(e) {
-        console.log('Erro ao carregar estado: ' + e.message);
+        var s = JSON.parse(localStorage.getItem('pState') || 'null');
+        if (!s) return;
+        currentTime = s.currentTime || 3600; isBreakTime = s.isBreakTime || false;
+        currentSessionSeconds = s.currentSessionSeconds || 0; totalTodaySeconds = s.totalTodaySeconds || 0;
+        updateHgMode(isBreakTime);
+        if (s.isRunning) _startTick();
+    } catch(e) {}
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// AMPULHETA
+// ═════════════════════════════════════════════════════════════════════════════
+var hgTop, hgBot, hgStr, hgCont, hgTs, hgFlip = false;
+
+function initHourglass() {
+    hgTop = document.getElementById('hgTopSand');
+    hgBot = document.getElementById('hgBotSand');
+    hgStr = document.getElementById('hgStream');
+    hgCont = document.getElementById('hourglassContainer');
+    if (hgTop) { hgDraw(0); setInterval(hgLoop, 50); }
+}
+function hgDraw(p) {
+    if (!hgTop) return; p = Math.max(0, Math.min(1, p));
+    var tH = 20*(1-p); hgTop.setAttribute('y',(4+20-tH).toFixed(1)); hgTop.setAttribute('height',Math.max(0,tH).toFixed(1));
+    var bH = 20*p;     hgBot.setAttribute('y',(40-bH).toFixed(1));   hgBot.setAttribute('height',Math.max(0,bH).toFixed(1));
+    hgStr.setAttribute('opacity',(p>0.01&&p<0.99)?'0.7':'0');
+}
+function hgLoop() {
+    if (hgFlip) return;
+    if (!hgTs) hgTs = Date.now();
+    var p = Math.min(1, (Date.now()-hgTs)/15000);
+    hgDraw(p);
+    if (p >= 1) { hgFlip=true; hgDraw(1); hgStr.setAttribute('opacity','0'); setTimeout(function(){hgDraw(0);hgTs=null;hgFlip=false;},300); }
+}
+function onHourglassClick() {
+    var pulse = document.getElementById('syncPulse');
+    if (pulse) { pulse.className='sync-pulse'; void pulse.offsetWidth; pulse.className='sync-pulse active'; }
+    if (hgCont) { hgCont.style.opacity='1'; setTimeout(function(){hgCont.style.opacity='';},1000); }
+    hgDraw(0); hgTs=null; hgFlip=false;
+    syncCheck();
+    console.log('[SYNC] Forçado via ampulheta');
+}
+function updateHgMode(brk) {
+    var c = brk ? '#4caf50' : '#7b1fa2';
+    if (hgTop) hgTop.setAttribute('fill',c);
+    if (hgBot) hgBot.setAttribute('fill',c);
+    if (hgStr) hgStr.setAttribute('fill',c);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GRADE DE HORAS
+// ═════════════════════════════════════════════════════════════════════════════
+var gradeHoras = new Array(24).fill(0);
+function gradeAddMinutos(h, m) { if (h>=0&&h<24&&m>0) { gradeHoras[h]+=m; gradeRefresh(); } }
+function gradeRefresh() {
+    var mount = document.getElementById('gradeMount'); if (!mount) return;
+    var hoje = new Date(), dias=['Dom','Seg','Ter','Qua','Qui','Sex','Sab'];
+    var nowMin = hoje.getHours()*60+hoje.getMinutes();
+    var html = '<table style=""width:100%;border-collapse:separate;border-spacing:2px;table-layout:fixed;""><tr>';
+    for (var h=0;h<24;h+=2) {
+        var m=(gradeHoras[h]||0)+(gradeHoras[h+1]||0);
+        var cor=m===0?'#252525':m<=15?'#3d1454':m<=30?'#5c1a7a':m<=59?'#7b1fa2':m<=79?'#8e24aa':'#ab47bc';
+        var cur=(h<=hoje.getHours()&&hoje.getHours()<h+2);
+        var brd='none'; if(cur){var pot=m+((h+2)*60-nowMin)*(60/75);brd=pot>=80?'2px solid #FFD700':'2px solid #ce93d8';}
+        var lbl=m>0?Math.round(m)+'':'';
+        var tip=dias[hoje.getDay()]+' '+(h<10?'0':'')+h+':00 ['+lbl+'min]';
+        html+='<td style=""background:'+cor+';border:'+brd+';border-radius:3px;height:26px;text-align:center;vertical-align:middle;font-size:8px;font-weight:700;color:'+(m>=60?'#e0e0e0':'#999')+';padding:0;"" data-tip=""'+tip+'"">'+lbl+'</td>';
     }
+    html+='</tr></table>'; mount.innerHTML=html;
 }
 
-// Nova função para verificar se está em modo de foco (não descanso)
-function isInFocusMode() {
-    return !isBreakTime;
+// ═════════════════════════════════════════════════════════════════════════════
+// TOOLTIP
+// ═════════════════════════════════════════════════════════════════════════════
+function initTooltip() {
+    var tip=null,delay=null,mx=0,my=0;
+    function gT(){if(!tip)tip=document.getElementById('customTooltip');return tip;}
+    function sT(t){var e=gT();if(!e)return;e.innerHTML=t;pT(e);e.style.display='block';}
+    function pT(e){var l=mx+4;if(mx>255)l=mx-e.offsetWidth-4;e.style.left=l+'px';e.style.top=(my+22)+'px';}
+    function hT(){var e=gT();if(e)e.style.display='none';if(delay){clearTimeout(delay);delay=null;}}
+    function fT(el){while(el&&el.nodeType===1){var t=el.getAttribute&&el.getAttribute('data-tip');if(t)return t;el=el.parentNode;}return null;}
+    document.body.addEventListener('mousemove',function(e){mx=e.clientX;my=e.clientY;var el=gT();if(el&&el.style.display!=='none')pT(el);});
+    document.body.addEventListener('mouseover',function(e){var t=fT(e.target);if(!t){hT();return;}if(delay)clearTimeout(delay);delay=setTimeout(function(){sT(t);},0);});
+    document.body.addEventListener('mouseout',function(){hT();});
 }
 
-// Função para expor currentSessionSeconds para o C#
-function getCurrentSessionSeconds() {
-    return currentSessionSeconds;
+// ═════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═════════════════════════════════════════════════════════════════════════════
+// =============================================================================
+// PAINEL DE CONFIGURACOES
+// =============================================================================
+
+// Valores padrao (em segundos ou minutos conforme campo)
+var cfg = {
+    syncInterval:  15,    // segundos — syncCheck
+    saveInterval:  30,    // segundos — saveTimeAcc
+    minMinutes:    0.5,   // minutos  — threshold para salvar
+    focoMinutes:   60,    // minutos  — duracao do foco
+    breakMinutes:  15     // minutos  — duracao do descanso
+};
+
+var _syncTimer = null;
+var _saveTimer = null;
+
+function loadSettings() {
+    try {
+        var s = JSON.parse(localStorage.getItem('pwCfg') || 'null');
+        if (s) {
+            cfg.syncInterval = s.syncInterval || cfg.syncInterval;
+            cfg.saveInterval = s.saveInterval || cfg.saveInterval;
+            cfg.minMinutes   = s.minMinutes   || cfg.minMinutes;
+            cfg.focoMinutes  = s.focoMinutes  || cfg.focoMinutes;
+            cfg.breakMinutes = s.breakMinutes || cfg.breakMinutes;
+        }
+    } catch(e) {}
+    applySettings();
+    syncInputsFromCfg();
 }
 
-// Função para obter se está em modo de foco
-function getIsInFocusMode() {
-    return !isBreakTime;
+function applySettings() {
+    // Reinicia timers com novos intervalos
+    if (_syncTimer) clearInterval(_syncTimer);
+    if (_saveTimer) clearInterval(_saveTimer);
+    _syncTimer = setInterval(syncCheck,   cfg.syncInterval * 1000);
+    _saveTimer = setInterval(saveTimeAcc, cfg.saveInterval * 1000);
+    console.log('[CFG] sync=' + cfg.syncInterval + 's save=' + cfg.saveInterval + 's minMin=' + cfg.minMinutes + ' foco=' + cfg.focoMinutes + 'min break=' + cfg.breakMinutes + 'min');
 }
 
-// Função para definir a tarefa estudando (chamada pelo C#)
-function setStudyingTask(taskName) {
-    var taskTitle = document.getElementById('pomodoroTaskTitle');
-    var taskInfo = document.getElementById('taskInfo');
-    
-    if (taskTitle) {
-        taskTitle.textContent = taskName;
-    }
-    if (taskInfo) {
-        taskInfo.textContent = 'Tarefa atual: ' + taskName;
-    }
-    
-    // Resetar contadores quando mudar de tarefa
-    currentSessionSeconds = 0;
-    updateDisplay();
+function syncInputsFromCfg() {
+    var f = function(id, val) { var el=document.getElementById(id); if(el) el.value=val; };
+    f('cfgSync',   cfg.syncInterval);
+    f('cfgSave',   cfg.saveInterval);
+    f('cfgMinMin', cfg.minMinutes);
+    f('cfgFoco',   cfg.focoMinutes);
+    f('cfgBreak',  cfg.breakMinutes);
 }
 
-// Prevenir comportamento padrão de arrasto em botões
-document.addEventListener('DOMContentLoaded', function() {
-    var buttons = document.querySelectorAll('button');
-    buttons.forEach(function(button) {
-        button.addEventListener('mousedown', function(e) {
-            e.stopPropagation();
-        });
-        button.addEventListener('click', function(e) {
-            e.stopPropagation();
-        });
-    });
-});";
-        }
-
-        [ComVisible(true)]
-        public class ObjectForScripting
-        {
-            private Form1 form;
-
-            public ObjectForScripting(Form1 form)
-            {
-                this.form = form;
-            }
-
-            public void CloseApp()
-            {
-                form.Invoke(new Action(() => form.Close()));
-            }
-
-            public void ToggleTimer()
-            {
-                form.Invoke(new Action(() => {
-                    form.ToggleTimer();
-                }));
-            }
-
-            public void MinimizeWidget()
-            {
-                form.Invoke(new Action(() => {
-                    form.MinimizeWidget();
-                }));
-            }
-
-            public void MaximizeWidget()
-            {
-                form.Invoke(new Action(() => {
-                    form.MaximizeWidget();
-                }));
-            }
-
-            public void SetStudyingTask(int taskId, string taskName)
-            {
-                form.Invoke(new Action(() => {
-                    form.SetStudyingTask(taskId, taskName);
-                }));
-            }
-        }
-
-        // Métodos públicos que podem ser chamados do JavaScript
-        public void ToggleTimer()
-        {
-            Log("ToggleTimer chamado");
-            if (webBrowser1.Document != null)
-            {
-                webBrowser1.Document.InvokeScript("toggleTimer");
-            }
-        }
-
-        public void MinimizeWidget()
-        {
-            Log("MinimizeWidget chamado");
-            // Modo compacto/expandido alternado
-            if (this.Height > 100)
-            {
-                // Modo compacto
-                this.Height = 57;
-                this.Width = 350;
-
-                // Esconder conteúdo, mostrar apenas header
-                if (webBrowser1.Document != null)
-                {
-                    webBrowser1.Document.InvokeScript("eval", new object[] { @"
-                        var content = document.getElementById('pomodoroContent');
-                        if (content) content.style.display = 'none';
-                    " });
-                }
-            }
-            else
-            {
-                // Modo expandido
-                this.Height = 300;
-                this.Width = 350;
-
-                // Mostrar conteúdo
-                if (webBrowser1.Document != null)
-                {
-                    webBrowser1.Document.InvokeScript("eval", new object[] { @"
-                        var content = document.getElementById('pomodoroContent');
-                        if (content) content.style.display = 'flex';
-                    " });
-                }
-            }
-
-            // Reaplicar cantos arredondados
-            SetRoundRegion(22);
-        }
-
-        public void MaximizeWidget()
-        {
-            Log("MaximizeWidget chamado");
-            if (this.WindowState == FormWindowState.Maximized)
-            {
-                this.WindowState = FormWindowState.Normal;
-                this.Size = new Size(350, 500);
-                // Reposicionar
-                this.Location = new Point(
-                    Screen.PrimaryScreen.WorkingArea.Width - this.Width - 20,
-                    Screen.PrimaryScreen.WorkingArea.Height - this.Height - 20
-                );
-            }
-            else
-            {
-                this.WindowState = FormWindowState.Maximized;
-            }
-            // Reaplicar cantos arredondados
-            SetRoundRegion(22);
-        }
-
-        public void SetStudyingTask(int taskId, string taskName)
-        {
-            currentStudyingTaskId = taskId;
-            currentStudyingTaskName = taskName;
-
-            // Atualizar título do widget
-            UpdateTaskTitle(taskName);
-
-            // Resetar contadores
-            lastSavedSeconds = 0;
-            totalSecondsAdded = 0;
-
-            Log($"Tarefa estudando definida: {taskName} (ID: {taskId})");
-        }
-
-        private void SetupSyncTimer()
-        {
-            syncTimer = new Timer();
-            syncTimer.Interval = 15000; // AUMENTADO para 15 segundos (era 3 segundos)
-            syncTimer.Tick += SyncTimer_Tick;
-            syncTimer.Start();
-        }
-
-        private void SetupSecondsUpdateTimer()
-        {
-            secondsUpdateTimer = new Timer();
-            secondsUpdateTimer.Interval = 1000; // 1 segundo
-            secondsUpdateTimer.Tick += SecondsUpdateTimer_Tick;
-            secondsUpdateTimer.Start();
-        }
-
-        private void SyncTimer_Tick(object sender, EventArgs e)
-        {
-            CheckForStudyingTaskUpdates();
-        }
-
-        private void SecondsUpdateTimer_Tick(object sender, EventArgs e)
-        {
-            UpdateCurrentTaskStudyTime();
-        }
-
-
-
-        private List<string> BuscarUrlsDaSessao(int sessionId)
-        {
-            List<string> urls = new List<string>();
-
-            try
-            {
-                using (var client = new WebClient())
-                {
-                    client.Encoding = Encoding.UTF8;
-
-                    // Fazer requisição para o save_session.php
-                    string requestUrl = $"https://sistemadetarefas.online/save_session.php?action=get_session&id={sessionId}";
-                    string jsonResponse = client.DownloadString(requestUrl);
-
-                    var response = Newtonsoft.Json.JsonConvert.DeserializeObject<SessionResponse>(jsonResponse);
-
-                    if (response.success && response.urls != null)
-                    {
-                        urls = response.urls.Select(u => u.url).ToList();
-                        Log($"Encontradas {urls.Count} URLs para sessão {sessionId}");
-                    }
-                    else
-                    {
-                        Log($"Nenhuma URL encontrada para sessão {sessionId}: {response.message}");
-                    }
-
-                    LimparSessionId();
-
-                }
-            }
-            catch (WebException webEx)
-            {
-                Log($"Erro de conexão ao buscar URLs: {webEx.Message}");
-            }
-            catch (Exception ex)
-            {
-                Log($"Erro ao buscar URLs da sessão {sessionId}: {ex.Message}");
-            }
-
-            return urls;
-        }
-
-        // Classes para desserializar a resposta do save_session.php
-        public class SessionResponse
-        {
-            public bool success { get; set; }
-            public string message { get; set; }
-            // public SessionData session { get; set; }
-            public List<
-                UrlData> urls
-            { get; set; }
-        }
-
-
-
-
-
-        public class UrlData
-        {
-            public string url { get; set; }
-            public string title { get; set; }
-            public string favicon_url { get; set; }
-            public int url_order { get; set; }
-        }
-
-        private void LimparSessionId()
-        {
-            try
-            {
-                using (var client = new WebClient())
-                {
-                    client.Encoding = Encoding.UTF8;
-                    client.Headers[HttpRequestHeader.ContentType] = "application/json";
-
-                    // Atualizar diretamente o session_id para NULL via SQL
-                    var data = new
-                    {
-                        action = "clear_session_id"
-                    };
-
-                    string json = Newtonsoft.Json.JsonConvert.SerializeObject(data);
-                    string response = client.UploadString("https://sistemadetarefas.online/pomodoro_sync.php", "POST", json);
-
-                    Log("Session_id definido como NULL");
-                }
-            }
-            catch (Exception ex)
-            {
-                Log($"Erro ao limpar session_id: {ex.Message}");
-            }
-        }
-
-
-
-
-
-        // Verificar atualizações da tarefa estudando
-        // Modifique o método CheckForStudyingTaskUpdates:
-
-
-
-
-
-        private void CheckForStudyingTaskUpdates()
-        {
-            if (DateTime.Now - lastSyncCheckTime < syncCheckInterval && lastSyncCheckTime != DateTime.MinValue)
-            {
-                return;
-            }
-
-            lastSyncCheckTime = DateTime.Now;
-
-
-            try
-            {
-                using (var client = new WebClient())
-                {
-                    client.Encoding = Encoding.UTF8;
-                    client.Headers[HttpRequestHeader.UserAgent] = "PomodoroWidget/1.0";
-
-                    string jsonData = client.DownloadString("https://sistemadetarefas.online/pomodoro_sync.php");
-                    var response = Newtonsoft.Json.JsonConvert.DeserializeObject<PomodoroSyncResponse>(jsonData);
-
-                    if (response.success && response.data != null)
-                    {
-                       
-
-
-                        int? studyingTaskId = response.data.studyingTaskId;
-                        string taskName = response.data.taskName;
-                        string source = response.data.source;
-                        int? session_id = response.data.sessionId;
-                        int? userId = response.data.userId;
-                        int? projectId = response.data.projectId;
-                        string projectName = response.data.projectName;
-
-                        // Buscar URLs se tiver session_id (apenas se não tiver buscado recentemente)
-                        if (session_id.HasValue && ShouldProcessSession(session_id.Value))
-                        {
-                            List<string> urls = BuscarUrlsDaSessao(session_id.Value);
-
-                            if (urls.Count > 0)
-                            {
-                                Log($"URLs encontradas: {string.Join(", ", urls)}");
-
-                                // Adicionar delay entre abertura de URLs
-                                Task.Run(async () =>
-                                {
-                                    Console.WriteLine("=== INICIANDO ABERTURA DE URLs ===");
-                                    for (int i = 0; i < urls.Count; i++)
-                                    {
-                                        Console.WriteLine($"[{i + 1}/{urls.Count}] Tentando abrir: '{urls[i]}'");
-                                        OpenLink(urls[i]);
-
-                                        // Adicionar delay entre abertura de cada URL
-                                        if (i < urls.Count - 1)
-                                        {
-                                            await Task.Delay(1000); // 1 segundo entre URLs
-                                        }
-                                    }
-                                    Console.WriteLine("=== TODAS URLs PROCESSADAS ===");
-                                });
-                            }
-                        }
-
-
-                        if (source == "website")
-                        {
-                            // Passar TODOS os dados capturados
-                            UpdateFromDatabase(studyingTaskId, taskName, userId, projectId, projectName);
-                        }
-                    }
-                }
-            }
-            catch (WebException webEx)
-            {
-                Log($"Erro de conexão ao verificar atualizações: {webEx.Message}");
-                syncTimer.Interval = Math.Min(syncTimer.Interval * 2, 60000);
-            }
-            catch (Exception ex)
-            {
-                Log($"Erro ao verificar atualizações: {ex.Message}");
-            }
-        }
-
-
-        private int? currentUserId = null;
-        private int? currentProjectId = null;
-        private string currentProjectName = null;
-
-
-        // Adicione este método para controlar processamento de sessões:
-        private Dictionary<int, DateTime> processedSessions = new Dictionary<int, DateTime>();
-        private readonly TimeSpan sessionProcessCooldown = TimeSpan.FromMinutes(5);
-
-        private bool ShouldProcessSession(int sessionId)
-        {
-            // Verificar se já processamos esta sessão recentemente
-            if (processedSessions.ContainsKey(sessionId))
-            {
-                if (DateTime.Now - processedSessions[sessionId] < sessionProcessCooldown)
-                {
-                    return false; // Sessão processada recentemente
-                }
-            }
-
-            processedSessions[sessionId] = DateTime.Now;
-
-            // Limpar sessões antigas do cache
-            var oldSessions = processedSessions.Where(kvp => DateTime.Now - kvp.Value > TimeSpan.FromHours(1)).ToList();
-            foreach (var oldSession in oldSessions)
-            {
-                processedSessions.Remove(oldSession.Key);
-            }
-
-            return true;
-        }
-
-        private void OpenLink(string url)
-        {
-            try
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = url,
-                    UseShellExecute = true
-                });
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Erro ao abrir link: {url}\n{ex.Message}");
-            }
-
-        }
-
-
-        private void ProcessarUrls(List<string> urls)
-        {
-            // Aqui você pode processar as URLs como necessário
-            // Por exemplo, exibir no widget, carregar no WebBrowser, etc.
-
-            foreach (string url in urls)
-            {
-                Log($"URL da sessão: {url}");
-            }
-
-            // Exemplo: carregar a primeira URL no WebBrowser (se aplicável)
-            if (urls.Count > 0 && webBrowser1 != null && isWebBrowserReady)
-            {
-                // webBrowser1.Navigate(urls[0]); // Descomente se quiser navegar
-            }
-        }
-
-
-        // Atualizar a partir do banco de dados
-
-
-        private void UpdateFromDatabase(int? studyingTaskId, string taskNameFromSync, int? userId, int? projectId, string projectName)
-        {
-            if (!studyingTaskId.HasValue)
-            {
-                if (currentStudyingTaskId.HasValue)
-                {
-                    Log("Site parou de estudar");
-                    SaveAccumulatedTime();
-                    ClearStudyingTask();
-                }
-                return;
-            }
-
-            if (studyingTaskId.Value != currentStudyingTaskId)
-            {
-                Log($"Site marcou tarefa como estudando: {studyingTaskId.Value} - {taskNameFromSync}");
-
-                if (currentStudyingTaskId.HasValue && accumulatedSeconds > 0)
-                {
-                    UpdateTaskStudyTime(currentStudyingTaskId.Value, accumulatedSeconds, true);
-                    accumulatedSeconds = 0;
-                }
-
-                // ATUALIZE TODOS OS DADOS
-                currentUserId = userId; // ← AGORA TEM user_id!
-                currentProjectId = projectId;
-                currentProjectName = projectName;
-                currentStudyingTaskName = taskNameFromSync;
-
-                SetStudyingTask(studyingTaskId.Value, taskNameFromSync);
-                lastSavedSeconds = 0;
-                totalSecondsAdded = 0;
-                accumulatedSeconds = 0;
-
-                Log($"Dados atualizados - UserID: {currentUserId}, TaskID: {studyingTaskId}, Projeto: {projectName}");
-            }
-        }
-
-
-        private void SaveToEstudoRegistro(decimal minutosEstudados)
-        {
-            if (!currentStudyingTaskId.HasValue || minutosEstudados <= 0)
-                return;
-
-            int userIdToSave = currentUserId ?? 1;
-
-            var data = new
-            {
-                action = "save_estudo_registro",
-                usuario_id = userIdToSave,
-                minutos_estudados = minutosEstudados,
-                task_name = currentStudyingTaskName,
-                tarefa_id = currentStudyingTaskId,
-                project_name = currentProjectName ?? "",
-                data_estudo = DateTime.Now.ToString("yyyy-MM-dd"),
-                // Adiciona o horário do computador
-                data_criacao_computador = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
-            };
-
-            string json = Newtonsoft.Json.JsonConvert.SerializeObject(data);
-
-            Log($"DEBUG: Enviando {minutosEstudados} minutos para estudo_registro");
-
-            Task.Run(() =>
-            {
-                try
-                {
-                    using (var client = new WebClient())
-                    {
-                        client.Headers[HttpRequestHeader.ContentType] = "application/json";
-                        client.Encoding = Encoding.UTF8;
-
-                        string response = client.UploadString("https://sistemadetarefas.online/pomodoro_sync.php", "POST", json);
-
-                        var result = Newtonsoft.Json.JsonConvert.DeserializeObject<dynamic>(response);
-                        if (result.success == true)
-                            Log($"DEBUG: ✓ {minutosEstudados} min salvos (ID: {result.insert_id})");
-                        else
-                            Log($"DEBUG: ✗ Erro: {result.message}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log($"DEBUG: Erro ao salvar: {ex.Message}");
-                }
-            });
-        }
-        // Atualizar o tempo da tarefa atual a cada segundo
-        // Modifique o método UpdateCurrentTaskStudyTime:
-        private void UpdateCurrentTaskStudyTime()
-        {
-            if (currentStudyingTaskId.HasValue && isWebBrowserReady)
-            {
-                try
-                {
-                    // VERIFICAR SE ESTÁ EM MODO DE FOCO (NÃO DESCANSO)
-                    object isInFocusModeResult = webBrowser1.Document.InvokeScript("eval",
-                        new object[] { "getIsInFocusMode();" });
-
-                    if (isInFocusModeResult != null && bool.TryParse(isInFocusModeResult.ToString(), out bool isInFocusMode))
-                    {
-                        if (!isInFocusMode)
-                        {
-                            // Se não estiver em modo de foco (está em descanso), não atualizar
-                            return;
-                        }
-                    }
-
-                    // Buscar o tempo atual da sessão do JavaScript
-                    object result = webBrowser1.Document.InvokeScript("eval",
-                        new object[] { "getCurrentSessionSeconds();" });
-
-                    if (result != null && int.TryParse(result.ToString(), out int currentSeconds))
-                    {
-                        // Calcular a diferença desde a última atualização
-                        int secondsToAdd = currentSeconds - lastSavedSeconds;
-
-                        if (secondsToAdd > 0)
-                        {
-                            // Acumular segundos em vez de enviar imediatamente
-                            accumulatedSeconds += secondsToAdd;
-                            lastSavedSeconds = currentSeconds;
-                            totalSecondsAdded += secondsToAdd;
-
-                            // Verificar se é hora de enviar para o servidor
-                            if (DateTime.Now - lastUpdateTime >= updateInterval || accumulatedSeconds >= 60)
-                            {
-                                SaveAccumulatedTime();
-                            }
-
-                            // Log a cada 60 segundos
-                            if (currentSeconds % 60 == 0)
-                            {
-                                Log($"Tempo acumulado para tarefa {currentStudyingTaskId}: {currentSeconds} segundos totais, {accumulatedSeconds} não enviados");
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log($"Erro ao buscar tempo da sessão: {ex.Message}");
-                }
-            }
-        }
-
-        // Adicione este método para salvar tempo acumulado:
-        // Atualizar segundos da tarefa no banco de dados
-
-
-
-        private void SaveAccumulatedTime()
-        {
-            if (currentStudyingTaskId.HasValue && accumulatedSeconds > 0)
-            {
-                // Converter segundos para minutos decimais
-                decimal minutosDecimais = Math.Round(accumulatedSeconds / 60.0m, 2);
-
-                // Só salvar se tiver pelo menos 0.5 minutos (30 segundos)
-                if (minutosDecimais >= 0.5m)
-                {
-                    Log($"Salvando {minutosDecimais} minutos ({accumulatedSeconds} segundos)");
-
-                    // 1. Atualizar tempo na tarefa
-                    UpdateTaskStudyTime(currentStudyingTaskId.Value, accumulatedSeconds, false);
-
-                    // 2. Salvar no estudo_registro
-                    SaveToEstudoRegistro(minutosDecimais);
-
-                    lastUpdateTime = DateTime.Now;
-                    accumulatedSeconds = 0;
-                }
-                else
-                {
-                    // Aguarda acumular mais tempo
-                    Log($"Aguardando: {minutosDecimais} minutos (menos que 0.5)");
-                }
-            }
-        }
-
-
-
-        // Modifique o método UpdateTaskStudyTime:
-        private void UpdateTaskStudyTime(int taskId, int secondsToAdd, bool forceLog = false)
-        {
-            try
-            {
-                using (var client = new WebClient())
-                {
-                    client.Headers[HttpRequestHeader.ContentType] = "application/json";
-                    client.Headers[HttpRequestHeader.UserAgent] = "PomodoroWidget/1.0";
-
-                    // Adicionar um timestamp único para evitar cache
-                    string timestamp = DateTime.Now.Ticks.ToString();
-
-                    var data = new
-                    {
-                        action = "update_tarefa_segundos",
-                        id = taskId,
-                        segundos = secondsToAdd,
-                        timestamp = timestamp // Evitar cache do servidor
-                    };
-
-                    string json = Newtonsoft.Json.JsonConvert.SerializeObject(data);
-
-                    // Usar UploadStringAsync para não bloquear a thread principal
-                    client.UploadStringAsync(new Uri("https://sistemadetarefas.online/tarefas.php"), "POST", json);
-                    // Log apenas se forçado ou se for uma quantidade significativa de tempo
-                    if (forceLog || secondsToAdd >= 60)
-                    {
-                        Log($"Tempo enviado para tarefa {taskId}: +{secondsToAdd} segundos (enviado em lote)");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Log($"Erro ao atualizar tempo da tarefa: {ex.Message}");
-                // Em caso de erro, manter o tempo acumulado para tentar novamente depois
-                accumulatedSeconds += secondsToAdd;
-            }
-        }
-        // Atualizar título da tarefa no widget
-        private void UpdateTaskTitle(string taskName)
-        {
-            if (webBrowser1.Document != null && isWebBrowserReady)
-            {
-                try
-                {
-                    webBrowser1.Document.InvokeScript("setStudyingTask", new object[] { taskName });
-                }
-                catch (Exception ex)
-                {
-                    Log($"Erro ao atualizar título: {ex.Message}");
-                }
-            }
-        }
-
-        // Limpar tarefa estudando
-        private void ClearStudyingTask()
-        {
-            currentStudyingTaskId = null;
-            currentStudyingTaskName = "Nenhuma tarefa";
-            lastSavedSeconds = 0;
-            totalSecondsAdded = 0;
-
-            // Atualizar título do widget
-            UpdateTaskTitle("Pomodoro Widget");
-
-            Log("Tarefa estudando limpa");
-        }
-
-        // Classes para desserialização do JSON
-        public class PomodoroSyncResponse
-        {
-            public bool success { get; set; }
-            public PomodoroData data { get; set; }
-        }
-
-
-        public class PomodoroData
-        {
-            public int? studyingTaskId { get; set; }
-            public string taskName { get; set; }
-            public string source { get; set; }
-            public int? sessionId { get; set; }
-            public int? userId { get; set; }        // ← DEVE ESTAR AQUI
-            public int? projectId { get; set; }     // ← DEVE ESTAR AQUI
-            public string projectName { get; set; } // ← DEVE ESTAR AQUI
-            public List<string> urls { get; set; }
-            public List<string> sessionUrls { get; set; }
-            public string baseUrl { get; set; }
-        }
-
-
-
-        private void Log(string message)
-        {
-            try
-            {
-                string logFile = Path.Combine(appDataPath, "pomodoro_correct_buttons.log");
-                string logEntry = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {message}{Environment.NewLine}";
-                File.AppendAllText(logFile, logEntry);
-
-                Debug.WriteLine(message);
-            }
-            catch
-            {
-                // Ignora erros de log
-            }
-        }
-
-        protected override void OnFormClosing(FormClosingEventArgs e)
-        {
-            SaveAccumulatedTime();
-
-            Log("Pomodoro Widget fechado");
-            syncTimer?.Stop();
-            secondsUpdateTimer?.Stop();
-            base.OnFormClosing(e);
-        }
-
-        // Adicionar sombra à janela
-        protected override CreateParams CreateParams
-        {
-            get
-            {
-                const int CS_DROPSHADOW = 0x20000;
-                CreateParams cp = base.CreateParams;
-                cp.ClassStyle |= CS_DROPSHADOW;
-                return cp;
-            }
-        }
-
-
-
-
+function saveSettings() {
+    var g = function(id) { return parseFloat(document.getElementById(id).value); };
+    cfg.syncInterval = Math.max(5,   Math.min(300, g('cfgSync')   || 15));
+    cfg.saveInterval = Math.max(10,  Math.min(600, g('cfgSave')   || 30));
+    cfg.minMinutes   = Math.max(0.1, Math.min(5,   g('cfgMinMin') || 0.5));
+    cfg.focoMinutes  = Math.max(1,   Math.min(120, g('cfgFoco')   || 60));
+    cfg.breakMinutes = Math.max(1,   Math.min(60,  g('cfgBreak')  || 15));
+    try { localStorage.setItem('pwCfg', JSON.stringify(cfg)); } catch(e) {}
+    applySettings();
+    syncInputsFromCfg();
+    var fb = document.getElementById('spFeedback');
+    if (fb) { fb.textContent = 'Salvo!'; setTimeout(function(){ fb.textContent=''; }, 2000); }
+    console.log('[CFG] Configuracoes salvas');
+}
+
+function togglePanel() {
+    var panel   = document.getElementById('settingsPanel');
+    var overlay = document.getElementById('settingsOverlay');
+    if (!panel) return;
+    var opening = !panel.classList.contains('open');
+    panel.classList.toggle('open');
+    overlay.classList.toggle('open');
+    if (opening) syncInputsFromCfg();
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+function shouldProcess(dict, id) {
+    var COOLDOWN = 5*60*1000;
+    if (dict[id] && Date.now()-dict[id] < COOLDOWN) return false;
+    dict[id] = Date.now(); return true;
+}
+function dateToday() { var d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+function dateNow()   { return dateToday()+' '+new Date().toTimeString().slice(0,8); }
+function fmtDateTime(d) { return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+d.toTimeString().slice(0,8); }
+function pad(n) { return n < 10 ? '0'+n : ''+n; }";
     }
 }
