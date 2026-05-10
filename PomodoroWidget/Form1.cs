@@ -1,17 +1,17 @@
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
 using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
-using Microsoft.Web.WebView2.Core;
-using Microsoft.Web.WebView2.WinForms;
+using System.Xml.Linq;
 
 namespace PomodoroWidget
 {
     public partial class Form1 : Form
     {
-        // ── P/Invoke ──────────────────────────────────────────────────────────
         [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
         [DllImport("user32.dll")] public static extern bool ReleaseCapture();
         [DllImport("user32.dll")] public static extern int SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
@@ -28,7 +28,6 @@ namespace PomodoroWidget
         private string appDataPath;
         private bool isWebBrowserReady = false;
 
-        // ── Construtor ────────────────────────────────────────────────────────
         public Form1()
         {
             InitializeComponent();
@@ -41,7 +40,6 @@ namespace PomodoroWidget
             Log("Widget iniciado — WebView2 + fetch()");
         }
 
-        // ── Formulário ────────────────────────────────────────────────────────
         private void SetupForm()
         {
             this.Text = "Pomodoro Widget";
@@ -68,7 +66,6 @@ namespace PomodoroWidget
 
         protected override void OnResize(EventArgs e) { base.OnResize(e); SetRoundRegion(22); }
 
-        // F12 abre DevTools
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (keyData == Keys.F12 && isWebBrowserReady)
@@ -84,7 +81,6 @@ namespace PomodoroWidget
             get { var cp = base.CreateParams; cp.ClassStyle |= 0x20000; return cp; }
         }
 
-        // ── WebView2 ──────────────────────────────────────────────────────────
         private async void SetupWebBrowser()
         {
             await webBrowser1.EnsureCoreWebView2Async(null);
@@ -100,8 +96,6 @@ namespace PomodoroWidget
             webBrowser1.CoreWebView2.AddHostObjectToScript("external", new HostObject(this));
             webBrowser1.NavigationCompleted += (o, e) => { isWebBrowserReady = true; Log("WebView2 pronto"); };
 
-            // Escreve o HTML em arquivo temporário e mapeia como https://pomodoro.local
-            // Isso dá ao JS uma origem real, permitindo fetch() para o servidor
             string tempDir = Path.Combine(Path.GetTempPath(), "PomodoroWidget");
             Directory.CreateDirectory(tempDir);
             string htmlFile = Path.Combine(tempDir, "index.html");
@@ -115,7 +109,6 @@ namespace PomodoroWidget
             webBrowser1.CoreWebView2.Navigate("https://pomodoro.local/index.html");
         }
 
-        // ── Host Object — apenas ações que PRECISAM do C# ────────────────────
         [ComVisible(true)]
         [ClassInterface(ClassInterfaceType.AutoDual)]
         public class HostObject
@@ -133,14 +126,12 @@ namespace PomodoroWidget
 
             public void MinimizeWidget() => f.Invoke(new Action(() => f.DoMinimize()));
 
-            // Abre URL no browser do sistema (impossível via fetch)
             public void OpenLink(string url) => f.Invoke(new Action(() =>
             {
                 try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = url, UseShellExecute = true }); }
                 catch (Exception ex) { f.Log("OpenLink erro: " + ex.Message); }
             }));
 
-            // Log opcional do JS no arquivo
             public void LogFromJS(string msg) => f.Invoke(new Action(() => f.Log("[JS] " + msg)));
         }
 
@@ -171,7 +162,6 @@ namespace PomodoroWidget
             base.OnFormClosing(e);
         }
 
-        // ── Log ───────────────────────────────────────────────────────────────
         public void Log(string msg)
         {
             try
@@ -184,9 +174,6 @@ namespace PomodoroWidget
             catch { }
         }
 
-        // ═════════════════════════════════════════════════════════════════════
-        // HTML
-        // ═════════════════════════════════════════════════════════════════════
         private string BuildHtml() =>
 $@"<!DOCTYPE html>
 <html>
@@ -245,36 +232,28 @@ $@"<!DOCTYPE html>
     <button class='sp-close' onclick='togglePanel()'>✕</button>
   </div>
   <div class='sp-body'>
-
     <div class='sp-section'>Intervalos de atualização</div>
-
     <div class='sp-row'>
       <label class='sp-label' for='cfgSync'>Sync principal <span class='sp-unit'>(seg)</span></label>
       <input class='sp-input' id='cfgSync' type='number' min='5' max='300' step='5' value='15'/>
     </div>
-
     <div class='sp-row'>
       <label class='sp-label' for='cfgSave'>Salvar estudo <span class='sp-unit'>(seg)</span></label>
       <input class='sp-input' id='cfgSave' type='number' min='10' max='600' step='10' value='30'/>
     </div>
-
     <div class='sp-row'>
       <label class='sp-label' for='cfgMinMin'>Mínimo p/ salvar <span class='sp-unit'>(min)</span></label>
       <input class='sp-input' id='cfgMinMin' type='number' min='0.1' max='5' step='0.1' value='0.5'/>
     </div>
-
     <div class='sp-section' style='margin-top:14px;'>Temporizador</div>
-
     <div class='sp-row'>
       <label class='sp-label' for='cfgFoco'>Foco <span class='sp-unit'>(min)</span></label>
       <input class='sp-input' id='cfgFoco' type='number' min='1' max='120' step='1' value='60'/>
     </div>
-
     <div class='sp-row'>
       <label class='sp-label' for='cfgBreak'>Descanso <span class='sp-unit'>(min)</span></label>
       <input class='sp-input' id='cfgBreak' type='number' min='1' max='60' step='1' value='15'/>
     </div>
-
     <button class='sp-save' onclick='saveSettings()'>Salvar</button>
     <div class='sp-feedback' id='spFeedback'></div>
   </div>
@@ -293,15 +272,21 @@ $@"<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Overlay tempo estimado excedido -->
+<div id='tempoExcedidoOverlay' style='display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;'>
+  <div style='position:absolute;top:50%;left:50%;width:300px;margin:-100px 0 0 -150px;background:#1a1a2e;border:2px solid #f6ad55;border-radius:10px;padding:16px 18px;'>
+    <div style='color:#f6ad55;font-size:12px;font-weight:700;margin-bottom:4px;'>⏰ TEMPO ESTIMADO EXCEDIDO</div>
+    <div id='tempoExcedidoMsg' style='color:#fbd38d;font-size:11px;margin-bottom:14px;'></div>
+    <button onclick='fecharTempoExcedido()' style='width:100%;background:#b7791f;color:#fff;border:none;border-radius:6px;padding:8px;font-size:12px;font-weight:700;cursor:pointer;'>Continuar</button>
+  </div>
+</div>
+
 <!-- Tooltip -->
 <div id='customTooltip' style='display:none;position:fixed;z-index:99999;pointer-events:none;max-width:180px;background:#2a1040;border:1px solid #7b1fa2;border-radius:6px;padding:5px 9px;font-size:10px;font-weight:600;color:#e0c8f0;box-shadow:0 4px 16px rgba(0,0,0,.6);line-height:1.4;'></div>
 
 <script>{BuildJs()}</script>
 </body></html>";
 
-        // ═════════════════════════════════════════════════════════════════════
-        // CSS
-        // ═════════════════════════════════════════════════════════════════════
         private string BuildCss() => @"
 *{margin:0;padding:0;box-sizing:border-box;}
 body{background:#1E1E1E;color:#fff;font-family:'Segoe UI',sans-serif;overflow:hidden;height:100vh;user-select:none;border-radius:15px;}
@@ -344,10 +329,8 @@ body{background:#1E1E1E;color:#fff;font-family:'Segoe UI',sans-serif;overflow:hi
 .val{font-size:14px;font-weight:bold;color:#7b1fa2;}
 .task-info{text-align:center;font-size:10px;color:#e0e0e0;background:rgba(123,31,162,.1);padding:8px;border-radius:8px;border:1px solid rgba(123,31,162,.3);}
 #gradeMount{width:100%;overflow:hidden;margin-top:2px;}
-/* -- Hamburguer -- */
 .btn-burger{background:none;border:none;color:rgba(255,255,255,.35);font-size:15px;cursor:pointer;padding:2px 4px;border-radius:4px;transition:color .2s,background .2s;line-height:1;margin-right:2px;}
 .btn-burger:hover{color:rgba(255,255,255,.8);background:rgba(255,255,255,.08);}
-/* -- Painel lateral -- */
 .settings-panel{position:fixed;top:0;right:-260px;width:250px;height:100%;background:#1a1a2e;border-left:1px solid rgba(123,31,162,.5);z-index:8000;transition:right .28s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;box-shadow:-4px 0 24px rgba(0,0,0,.5);}
 .settings-panel.open{right:0;}
 .settings-overlay{position:fixed;inset:0;background:rgba(0,0,0,.0);z-index:7999;display:none;cursor:pointer;}
@@ -366,23 +349,17 @@ body{background:#1E1E1E;color:#fff;font-family:'Segoe UI',sans-serif;overflow:hi
 .sp-save:hover{background:#8e24aa;}
 .sp-feedback{font-size:10px;color:#a5d6a7;text-align:center;margin-top:8px;min-height:14px;}";
 
-        // ═════════════════════════════════════════════════════════════════════
-        // JAVASCRIPT — todas as 10 requests como fetch()
-        // ═════════════════════════════════════════════════════════════════════
         private string BuildJs() => @"
-// ── Configuração ─────────────────────────────────────────────────────────────
 var API   = 'https://sistemadetarefas.online';
 var UID   = 2;
 var X_KEY = 'STI_DESKTOP_K3Y_2025_XrQ9mVpL';
 
-// ── Helper C# ─────────────────────────────────────────────────────────────────
 function hostCall(method) {
     var args = Array.prototype.slice.call(arguments, 1);
     try { var h = window.chrome.webview.hostObjects.sync.external; h[method].apply(h, args); }
     catch(e) { console.error('[hostCall] ' + method + ':', e); }
 }
 
-// ── Estado do timer ───────────────────────────────────────────────────────────
 var isRunning             = false;
 var currentTime           = 3600;
 var isBreakTime           = false;
@@ -390,32 +367,27 @@ var currentSessionSeconds = 0;
 var totalTodaySeconds     = 0;
 var tickInterval          = null;
 
-// ── Estado da tarefa ──────────────────────────────────────────────────────────
-var studyingTaskId      = null;
-var studyingTaskName    = 'Nenhuma tarefa';
-var studyingUserId      = UID;
-var studyingProjectId   = null;
-var studyingProjectName = '';
+var studyingTaskId        = null;
+var studyingTaskName      = 'Nenhuma tarefa';
+var studyingUserId        = UID;
+var studyingProjectId     = null;
+var studyingProjectName   = '';
+var studyingTempoEstimado = null;
 
-// ── Acúmulo para salvar ────────────────────────────────────────────────────────
-var accumulatedSeconds  = 0;
-var lastSavedSessionSec = 0;
+var accumulatedSeconds    = 0;
+var lastSavedSessionSec   = 0;
 
-// ── Pausas/Desvios ────────────────────────────────────────────────────────────
-var pauseStartTs         = null;
-var pauseDisplayInterval = null;
-var pendingDesvio        = null;
+var pauseStartTs          = null;
+var pauseDisplayInterval  = null;
+var pendingDesvio         = null;
 
-// ── Cooldowns duplicata ────────────────────────────────────────────────────────
-var processedSessions  = {};
-var processedQErradas  = {};
-var processedAnotacoes = {};
+var processedSessions     = {};
+var processedQErradas     = {};
+var processedAnotacoes    = {};
 
-// ═════════════════════════════════════════════════════════════════════════════
-// INIT
-// ═════════════════════════════════════════════════════════════════════════════
+var tempoExcedidoNotificado = false;
+
 document.addEventListener('DOMContentLoaded', function() {
-    // Drag header → C#
     var hdr = document.getElementById('pomodoroHeader');
     if (hdr) {
         hdr.addEventListener('mousedown', function(ev) {
@@ -433,10 +405,8 @@ document.addEventListener('DOMContentLoaded', function() {
     gradeRefresh();
     initTooltip();
 
-    // Timers gerenciados pelo cfg (configuráveis pelo painel)
-    loadSettings(); // carrega cfg do localStorage e inicia _syncTimer/_saveTimer
+    loadSettings();
 
-    // Acumula segundos a cada 1s (substitui SecondsUpdateTimer do C#)
     setInterval(function() {
         if (!isRunning || isBreakTime || !studyingTaskId) return;
         var diff = currentSessionSeconds - lastSavedSessionSec;
@@ -446,9 +416,6 @@ document.addEventListener('DOMContentLoaded', function() {
     console.log('[INIT] Widget pronto — 10 requests via fetch()');
 });
 
-// ═════════════════════════════════════════════════════════════════════════════
-// REQUEST 1 — GET pomodoro_sync.php   (sync principal, 15s)
-// ═════════════════════════════════════════════════════════════════════════════
 async function syncCheck() {
     try {
         var resp = await fetch(API + '/pomodoro_sync.php?user_id=' + UID);
@@ -457,23 +424,19 @@ async function syncCheck() {
         var d = data.data;
 
         if (d.taskIdResponderQErradas && shouldProcess(processedQErradas,  d.taskIdResponderQErradas))
-            await fetchQuestoesErradas();                       // REQUEST 2 + 8
+            await fetchQuestoesErradas();
 
         if (d.taskIdAbrirAnotacoes   && shouldProcess(processedAnotacoes, d.taskIdAbrirAnotacoes))
-            await fetchAnotacoes();                             // REQUEST 3 + 9
+            await fetchAnotacoes();
 
         if (d.sessionId              && shouldProcess(processedSessions,  d.sessionId))
-            await fetchSession(d.sessionId);                   // REQUEST 4 + 7
+            await fetchSession(d.sessionId);
 
         if (d.source === 'website')
             updateStudyingTask(d);
     } catch(e) { console.error('[SYNC] Erro:', e); }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// REQUEST 2 — GET get_urls_questoes_erradas
-// REQUEST 8 — POST clear_task_responder_q_erradas
-// ═════════════════════════════════════════════════════════════════════════════
 async function fetchQuestoesErradas() {
     try {
         var resp = await fetch(API + '/pomodoro_sync.php?action=get_urls_questoes_erradas&user_id=' + UID);
@@ -486,10 +449,6 @@ async function fetchQuestoesErradas() {
     } catch(e) { console.error('[Q_ERRADAS] Erro:', e); }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// REQUEST 3 — GET get_anotacoes_da_task
-// REQUEST 9 — POST clear_task_abrir_anotacoes
-// ═════════════════════════════════════════════════════════════════════════════
 async function fetchAnotacoes() {
     try {
         var resp = await fetch(API + '/pomodoro_sync.php?action=get_anotacoes_da_task&user_id=' + UID);
@@ -502,10 +461,6 @@ async function fetchAnotacoes() {
     } catch(e) { console.error('[ANOTACOES] Erro:', e); }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// REQUEST 4 — GET save_session.php get_session
-// REQUEST 7 — POST clear_session_id
-// ═════════════════════════════════════════════════════════════════════════════
 async function fetchSession(sessionId) {
     try {
         var resp = await fetch(API + '/save_session.php?action=get_session&id=' + sessionId);
@@ -518,9 +473,6 @@ async function fetchSession(sessionId) {
     } catch(e) { console.error('[SESSION] Erro:', e); }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// REQUEST 5 — POST save_estudo_registro
-// ═════════════════════════════════════════════════════════════════════════════
 async function saveEstudoRegistro(minutos) {
     if (!studyingTaskId || minutos <= 0) return;
     try {
@@ -546,9 +498,6 @@ async function saveEstudoRegistro(minutos) {
     } catch(e) { console.error('[SAVE_ESTUDO] fetch erro:', e); }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// REQUEST 6 — POST save_pausa
-// ═════════════════════════════════════════════════════════════════════════════
 async function savePausa(duracaoMinutos, tipo, motivo) {
     if (!studyingTaskId) return;
     var fim = new Date();
@@ -577,9 +526,6 @@ async function savePausa(duracaoMinutos, tipo, motivo) {
     } catch(e) { console.error('[PAUSA] fetch erro:', e); }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// REQUEST 7,8,9 — POST clear_* (helper genérico)
-// ═════════════════════════════════════════════════════════════════════════════
 async function postAction(payload) {
     try {
         await fetch(API + '/pomodoro_sync.php', {
@@ -590,9 +536,6 @@ async function postAction(payload) {
     } catch(e) { console.error('[POST_ACTION]', e); }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// REQUEST 10 — POST update_tarefa_segundos
-// ═════════════════════════════════════════════════════════════════════════════
 async function updateTarefaSegundos(segundos) {
     if (!studyingTaskId || segundos <= 0) return;
     try {
@@ -611,9 +554,6 @@ async function updateTarefaSegundos(segundos) {
     } catch(e) { console.error('[UPDATE_SEG] fetch erro:', e); }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// SALVAR ACUMULADO (dispara REQUEST 5 + 10 a cada 30s)
-// ═════════════════════════════════════════════════════════════════════════════
 async function saveTimeAcc() {
     if (!studyingTaskId || accumulatedSeconds <= 0) return;
     var minutos   = accumulatedSeconds / 60;
@@ -627,7 +567,6 @@ async function saveTimeAcc() {
     ]);
 }
 
-// Chamado pelo C# ao fechar (OnFormClosing)
 async function onAppClosing() {
     if (pauseStartTs !== null) {
         var dur = (Date.now() - pauseStartTs) / 60000;
@@ -637,40 +576,45 @@ async function onAppClosing() {
     console.log('[CLOSE] Cleanup concluído');
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// ATUALIZAR TAREFA
-// ═════════════════════════════════════════════════════════════════════════════
 function updateStudyingTask(d) {
     if (!d.studyingTaskId) {
         if (studyingTaskId) { saveTimeAcc(); studyingTaskId = null; setTaskTitle('Pomodoro Widget'); }
         return;
     }
+
+    // Sempre atualiza tempo_estimado independente de ser a mesma tarefa
+    studyingTempoEstimado = d.tempo_estimado || null;
+
     if (d.studyingTaskId !== studyingTaskId) {
         if (studyingTaskId && accumulatedSeconds > 0) saveTimeAcc();
-        studyingTaskId      = d.studyingTaskId;
-        studyingTaskName    = d.taskName    || 'Tarefa';
-        studyingUserId      = d.userId      || UID;
-        studyingProjectId   = d.projectId   || null;
-        studyingProjectName = d.projectName || '';
-        accumulatedSeconds  = 0;
-        lastSavedSessionSec = currentSessionSeconds;
+        studyingTaskId        = d.studyingTaskId;
+        studyingTaskName      = d.taskName    || 'Tarefa';
+        studyingUserId        = d.userId      || UID;
+        studyingProjectId     = d.projectId   || null;
+        studyingProjectName   = d.projectName || '';
+        accumulatedSeconds    = 0;
+        lastSavedSessionSec   = currentSessionSeconds;
         currentSessionSeconds = 0;
-        setTaskTitle(studyingTaskName);
-        updateDisplay();
-        console.log('[TASK] ' + studyingTaskName + ' (ID:' + studyingTaskId + ')');
+        tempoExcedidoNotificado = false;
+        console.log('[TASK] ' + studyingTaskName + ' (ID:' + studyingTaskId + ') tempo_estimado:' + studyingTempoEstimado);
     }
+
+    setTaskTitle(studyingTaskName);
+    updateDisplay();
 }
 
 function setTaskTitle(name) {
     var t = document.getElementById('pomodoroTaskTitle');
     var i = document.getElementById('taskInfo');
     if (t) t.textContent = name;
-    if (i) i.textContent = 'Tarefa atual: ' + name;
+    if (i) {
+        var tempo = studyingTempoEstimado && studyingTempoEstimado > 0
+            ? ' [' + studyingTempoEstimado + ' min]'
+            : '';
+        i.textContent = 'Tarefa atual: ' + name + tempo;
+    }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// TIMER
-// ═════════════════════════════════════════════════════════════════════════════
 function toggleTimer() { isRunning ? stopTimer() : startTimer(); saveState(); }
 
 function startTimer() {
@@ -709,7 +653,11 @@ function stopTimer() {
 function tick() {
     if (currentTime > 0) {
         currentTime--;
-        if (!isBreakTime) { currentSessionSeconds++; totalTodaySeconds++; }
+        if (!isBreakTime) {
+            currentSessionSeconds++;
+            totalTodaySeconds++;
+            checkTempoExcedido();
+        }
     } else { handleTimerComplete(); }
     updateDisplay();
 }
@@ -721,7 +669,7 @@ function handleTimerComplete() {
         var badge = document.getElementById('pomodoroSessionType');
         if (badge) { badge.textContent = 'Descanso'; badge.className = 'session-badge break'; badge.style.display = ''; }
         document.getElementById('pomodoroHeader').classList.add('break');
-        savePausa(15, 'pausa', 'descanso_pomodoro'); // REQUEST 6
+        savePausa(15, 'pausa', 'descanso_pomodoro');
     } else {
         isBreakTime = false; currentTime = cfg.focoMinutes * 60;
         var badge = document.getElementById('pomodoroSessionType');
@@ -733,274 +681,297 @@ function handleTimerComplete() {
     setTimeout(_startTick, 1000);
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// PAUSA / DESVIO
-// ═════════════════════════════════════════════════════════════════════════════
-function startPauseDisplay() {
-    var block = document.getElementById('pauseStatBlock');
-    if (block) block.style.display = '';
-    if (pauseDisplayInterval) clearInterval(pauseDisplayInterval);
-    pauseDisplayInterval = setInterval(function() {
-        if (!pauseStartTs) return;
-        var e = Math.floor((Date.now() - pauseStartTs) / 1000);
-        var m = Math.floor(e / 60), s = e % 60;
-        var el = document.getElementById('pauseElapsed');
-        var lb = document.getElementById('pauseStatLabel');
-        if (!el) return;
-        el.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
-        if      (m >= 30) { el.style.color = '#c53030'; if (lb) { lb.textContent = '⚠ Desvio'; lb.style.color = '#c53030'; } }
-        else if (m >= 10) { el.style.color = '#e53e3e'; if (lb) { lb.textContent = '⚠ Desvio'; lb.style.color = '#e53e3e'; } }
-        else              { el.style.color = '#7b1fa2'; if (lb) { lb.textContent = 'Desvio'; lb.style.color = ''; } }
-    }, 1000);
-}
-
-function stopPauseDisplay() {
-    if (pauseDisplayInterval) { clearInterval(pauseDisplayInterval); pauseDisplayInterval = null; }
-    var block = document.getElementById('pauseStatBlock');
-    if (block) block.style.display = 'none';
-    if (!pauseStartTs) return 0;
-    var dur = (Date.now() - pauseStartTs) / 60000;
-    pauseStartTs = null;
-    return dur;
-}
-
-function showDesvioOverlay(dur) {
-    var o = document.getElementById('desvioOverlay');
-    var d = document.getElementById('desvioOverlayDur');
-    var i = document.getElementById('desvioMotivoInput');
-    if (!o) return;
-    if (d) d.textContent = Math.round(dur) + ' min de desvio registrado';
-    if (i) i.value = '';
-    o.style.display = 'block';
-    setTimeout(function() { if (i) i.focus(); }, 100);
-}
-
-function hideDesvioOverlay() {
-    var o = document.getElementById('desvioOverlay');
-    if (o) o.style.display = 'none';
-}
-
-function sendPendingDesvio(motivo) {
-    if (!pendingDesvio) return;
-    savePausa(pendingDesvio.dur, 'desvio', motivo); // REQUEST 6
-    pendingDesvio = null;
-}
-
-function confirmDesvioMotivo() {
-    var i = document.getElementById('desvioMotivoInput');
-    hideDesvioOverlay();
-    sendPendingDesvio(i ? i.value.trim() : '');
-    _startTick();
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// DISPLAY
-// ═════════════════════════════════════════════════════════════════════════════
-function updateDisplay() {
-    var m = Math.floor(currentTime / 60), s = currentTime % 60;
-    var str = m + ':' + (s < 10 ? '0' : '') + s;
-    var timer = document.getElementById('pomodoroTimer');
-    var mini  = document.getElementById('pomodoroTimeMini');
-    var bar   = document.getElementById('pomodoroProgressBar');
-    if (timer) { timer.textContent = str; timer.className = 'timer' + (isBreakTime ? ' break' : ''); }
-    if (mini)  { mini.textContent  = str; mini.className  = 'time-mini' + (isBreakTime ? ' break' : ''); }
-    var total = isBreakTime ? 900 : 3600;
-    if (bar)   { bar.style.width = (((total - currentTime) / total) * 100) + '%'; bar.className = 'progress-bar' + (isBreakTime ? ' break' : ''); }
-    var cs = document.getElementById('currentSession');
-    var tt = document.getElementById('totalToday');
-    if (cs) cs.textContent = fmtSec(currentSessionSeconds);
-    if (tt) tt.textContent = fmtSec(totalTodaySeconds);
-}
-
-function fmtSec(s) {
-    var h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s % 60;
-    return (h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(ss<10?'0':'')+ss;
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// STATE
-// ═════════════════════════════════════════════════════════════════════════════
-function saveState() {
-    try { localStorage.setItem('pState', JSON.stringify({ currentTime: currentTime, isBreakTime: isBreakTime, isRunning: isRunning, currentSessionSeconds: currentSessionSeconds, totalTodaySeconds: totalTodaySeconds })); }
-    catch(e) {}
-}
-function loadState() {
-    try {
-        var s = JSON.parse(localStorage.getItem('pState') || 'null');
-        if (!s) return;
-        currentTime = s.currentTime || 3600; isBreakTime = s.isBreakTime || false;
-        currentSessionSeconds = s.currentSessionSeconds || 0; totalTodaySeconds = s.totalTodaySeconds || 0;
-        updateHgMode(isBreakTime);
-        if (s.isRunning) _startTick();
-    } catch(e) {}
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// AMPULHETA
-// ═════════════════════════════════════════════════════════════════════════════
-var hgTop, hgBot, hgStr, hgCont, hgTs, hgFlip = false;
-
-function initHourglass() {
-    hgTop = document.getElementById('hgTopSand');
-    hgBot = document.getElementById('hgBotSand');
-    hgStr = document.getElementById('hgStream');
-    hgCont = document.getElementById('hourglassContainer');
-    if (hgTop) { hgDraw(0); setInterval(hgLoop, 50); }
-}
-function hgDraw(p) {
-    if (!hgTop) return; p = Math.max(0, Math.min(1, p));
-    var tH = 20*(1-p); hgTop.setAttribute('y',(4+20-tH).toFixed(1)); hgTop.setAttribute('height',Math.max(0,tH).toFixed(1));
-    var bH = 20*p;     hgBot.setAttribute('y',(40-bH).toFixed(1));   hgBot.setAttribute('height',Math.max(0,bH).toFixed(1));
-    hgStr.setAttribute('opacity',(p>0.01&&p<0.99)?'0.7':'0');
-}
-function hgLoop() {
-    if (hgFlip) return;
-    if (!hgTs) hgTs = Date.now();
-    var p = Math.min(1, (Date.now()-hgTs)/15000);
-    hgDraw(p);
-    if (p >= 1) { hgFlip=true; hgDraw(1); hgStr.setAttribute('opacity','0'); setTimeout(function(){hgDraw(0);hgTs=null;hgFlip=false;},300); }
-}
-function onHourglassClick() {
-    var pulse = document.getElementById('syncPulse');
-    if (pulse) { pulse.className='sync-pulse'; void pulse.offsetWidth; pulse.className='sync-pulse active'; }
-    if (hgCont) { hgCont.style.opacity='1'; setTimeout(function(){hgCont.style.opacity='';},1000); }
-    hgDraw(0); hgTs=null; hgFlip=false;
-    syncCheck();
-    console.log('[SYNC] Forçado via ampulheta');
-}
-function updateHgMode(brk) {
-    var c = brk ? '#4caf50' : '#7b1fa2';
-    if (hgTop) hgTop.setAttribute('fill',c);
-    if (hgBot) hgBot.setAttribute('fill',c);
-    if (hgStr) hgStr.setAttribute('fill',c);
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// GRADE DE HORAS
-// ═════════════════════════════════════════════════════════════════════════════
-var gradeHoras = new Array(24).fill(0);
-function gradeAddMinutos(h, m) { if (h>=0&&h<24&&m>0) { gradeHoras[h]+=m; gradeRefresh(); } }
-function gradeRefresh() {
-    var mount = document.getElementById('gradeMount'); if (!mount) return;
-    var hoje = new Date(), dias=['Dom','Seg','Ter','Qua','Qui','Sex','Sab'];
-    var nowMin = hoje.getHours()*60+hoje.getMinutes();
-    var html = '<table style=""width:100%;border-collapse:separate;border-spacing:2px;table-layout:fixed;""><tr>';
-    for (var h=0;h<24;h+=2) {
-        var m=(gradeHoras[h]||0)+(gradeHoras[h+1]||0);
-        var cor=m===0?'#252525':m<=15?'#3d1454':m<=30?'#5c1a7a':m<=59?'#7b1fa2':m<=79?'#8e24aa':'#ab47bc';
-        var cur=(h<=hoje.getHours()&&hoje.getHours()<h+2);
-        var brd='none'; if(cur){var pot=m+((h+2)*60-nowMin)*(60/75);brd=pot>=80?'2px solid #FFD700':'2px solid #ce93d8';}
-        var lbl=m>0?Math.round(m)+'':'';
-        var tip=dias[hoje.getDay()]+' '+(h<10?'0':'')+h+':00 ['+lbl+'min]';
-        html+='<td style=""background:'+cor+';border:'+brd+';border-radius:3px;height:26px;text-align:center;vertical-align:middle;font-size:8px;font-weight:700;color:'+(m>=60?'#e0e0e0':'#999')+';padding:0;"" data-tip=""'+tip+'"">'+lbl+'</td>';
+function checkTempoExcedido() {
+    if (!studyingTempoEstimado || tempoExcedidoNotificado || isBreakTime) return;
+    var minutosAtual = currentSessionSeconds / 60;
+    if (minutosAtual >= studyingTempoEstimado) {
+        tempoExcedidoNotificado = true;
+        showTempoExcedido(minutosAtual);
     }
-    html+='</tr></table>'; mount.innerHTML=html;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// TOOLTIP
-// ═════════════════════════════════════════════════════════════════════════════
-function initTooltip() {
-    var tip=null,delay=null,mx=0,my=0;
-    function gT(){if(!tip)tip=document.getElementById('customTooltip');return tip;}
-    function sT(t){var e=gT();if(!e)return;e.innerHTML=t;pT(e);e.style.display='block';}
-    function pT(e){var l=mx+4;if(mx>255)l=mx-e.offsetWidth-4;e.style.left=l+'px';e.style.top=(my+22)+'px';}
-    function hT(){var e=gT();if(e)e.style.display='none';if(delay){clearTimeout(delay);delay=null;}}
-    function fT(el){while(el&&el.nodeType===1){var t=el.getAttribute&&el.getAttribute('data-tip');if(t)return t;el=el.parentNode;}return null;}
-    document.body.addEventListener('mousemove',function(e){mx=e.clientX;my=e.clientY;var el=gT();if(el&&el.style.display!=='none')pT(el);});
-    document.body.addEventListener('mouseover',function(e){var t=fT(e.target);if(!t){hT();return;}if(delay)clearTimeout(delay);delay=setTimeout(function(){sT(t);},0);});
-    document.body.addEventListener('mouseout',function(){hT();});
+function showTempoExcedido(minutosAtual) {
+    var o = document.getElementById('tempoExcedidoOverlay');
+    var m = document.getElementById('tempoExcedidoMsg');
+    if (!o) return;
+    if (m) m.textContent = 'Você estudou ' + Math.round(minutosAtual) + ' min na tarefa '+ studyingTaskName + ' (estimado: ' + studyingTempoEstimado + ' min).';
+    o.style.display = 'block';
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// HELPERS
-// ═════════════════════════════════════════════════════════════════════════════
-// =============================================================================
-// PAINEL DE CONFIGURACOES
-// =============================================================================
+function fecharTempoExcedido()
+        {
+            var o = document.getElementById('tempoExcedidoOverlay');
+            if (o) o.style.display = 'none';
+        }
 
-// Valores padrao (em segundos ou minutos conforme campo)
-var cfg = {
-    syncInterval:  15,    // segundos — syncCheck
-    saveInterval:  30,    // segundos — saveTimeAcc
-    minMinutes:    0.5,   // minutos  — threshold para salvar
-    focoMinutes:   60,    // minutos  — duracao do foco
-    breakMinutes:  15     // minutos  — duracao do descanso
+        function startPauseDisplay()
+        {
+            var block = document.getElementById('pauseStatBlock');
+            if (block) block.style.display = '';
+            if (pauseDisplayInterval) clearInterval(pauseDisplayInterval);
+            pauseDisplayInterval = setInterval(function() {
+                if (!pauseStartTs) return;
+                var e = Math.floor((Date.now() - pauseStartTs) / 1000);
+                var m = Math.floor(e / 60), s = e % 60;
+                var el = document.getElementById('pauseElapsed');
+                var lb = document.getElementById('pauseStatLabel');
+                if (!el) return;
+                el.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+                if (m >= 30) { el.style.color = '#c53030'; if (lb) { lb.textContent = '⚠ Desvio'; lb.style.color = '#c53030'; } }
+                else if (m >= 10) { el.style.color = '#e53e3e'; if (lb) { lb.textContent = '⚠ Desvio'; lb.style.color = '#e53e3e'; } }
+                else { el.style.color = '#7b1fa2'; if (lb) { lb.textContent = 'Desvio'; lb.style.color = ''; } }
+            }, 1000);
+        }
+
+        function stopPauseDisplay()
+        {
+            if (pauseDisplayInterval) { clearInterval(pauseDisplayInterval); pauseDisplayInterval = null; }
+            var block = document.getElementById('pauseStatBlock');
+            if (block) block.style.display = 'none';
+            if (!pauseStartTs) return 0;
+            var dur = (Date.now() - pauseStartTs) / 60000;
+            pauseStartTs = null;
+            return dur;
+        }
+
+        function showDesvioOverlay(dur)
+        {
+            var o = document.getElementById('desvioOverlay');
+            var d = document.getElementById('desvioOverlayDur');
+            var i = document.getElementById('desvioMotivoInput');
+            if (!o) return;
+            if (d) d.textContent = Math.round(dur) + ' min de desvio registrado';
+            if (i) i.value = '';
+            o.style.display = 'block';
+            setTimeout(function() { if (i) i.focus(); }, 100);
+        }
+
+        function hideDesvioOverlay()
+        {
+            var o = document.getElementById('desvioOverlay');
+            if (o) o.style.display = 'none';
+        }
+
+        function sendPendingDesvio(motivo)
+        {
+            if (!pendingDesvio) return;
+            savePausa(pendingDesvio.dur, 'desvio', motivo);
+            pendingDesvio = null;
+        }
+
+        function confirmDesvioMotivo()
+        {
+            var i = document.getElementById('desvioMotivoInput');
+            hideDesvioOverlay();
+            sendPendingDesvio(i ? i.value.trim() : '');
+            _startTick();
+        }
+
+        function updateDisplay()
+        {
+            var m = Math.floor(currentTime / 60), s = currentTime % 60;
+            var str = m + ':' + (s < 10 ? '0' : '') + s;
+            var timer = document.getElementById('pomodoroTimer');
+            var mini = document.getElementById('pomodoroTimeMini');
+            var bar = document.getElementById('pomodoroProgressBar');
+            if (timer) { timer.textContent = str; timer.className = 'timer' + (isBreakTime ? ' break' : ''); }
+            if (mini) { mini.textContent = str; mini.className = 'time-mini' + (isBreakTime ? ' break' : ''); }
+            var total = isBreakTime ? 900 : 3600;
+            if (bar) { bar.style.width = (((total - currentTime) / total) * 100) + '%'; bar.className = 'progress-bar' + (isBreakTime ? ' break' : ''); }
+            var cs = document.getElementById('currentSession');
+            var tt = document.getElementById('totalToday');
+            if (cs) cs.textContent = fmtSec(currentSessionSeconds);
+            if (tt) tt.textContent = fmtSec(totalTodaySeconds);
+        }
+
+        function fmtSec(s)
+        {
+            var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+            return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (ss < 10 ? '0' : '') + ss;
+        }
+
+        function saveState()
+        {
+            try { localStorage.setItem('pState', JSON.stringify({ currentTime: currentTime, isBreakTime: isBreakTime, isRunning: isRunning, currentSessionSeconds: currentSessionSeconds, totalTodaySeconds: totalTodaySeconds })); }
+            catch (e) { }
+        }
+        function loadState()
+        {
+            try
+            {
+                var s = JSON.parse(localStorage.getItem('pState') || 'null');
+                if (!s) return;
+                currentTime = s.currentTime || 3600; isBreakTime = s.isBreakTime || false;
+                currentSessionSeconds = s.currentSessionSeconds || 0; totalTodaySeconds = s.totalTodaySeconds || 0;
+                updateHgMode(isBreakTime);
+                if (s.isRunning) _startTick();
+            }
+            catch (e) { }
+        }
+
+        var hgTop, hgBot, hgStr, hgCont, hgTs, hgFlip = false;
+
+        function initHourglass()
+        {
+            hgTop = document.getElementById('hgTopSand');
+            hgBot = document.getElementById('hgBotSand');
+            hgStr = document.getElementById('hgStream');
+            hgCont = document.getElementById('hourglassContainer');
+            if (hgTop) { hgDraw(0); setInterval(hgLoop, 50); }
+        }
+        function hgDraw(p)
+        {
+            if (!hgTop) return; p = Math.max(0, Math.min(1, p));
+            var tH = 20 * (1 - p); hgTop.setAttribute('y', (4 + 20 - tH).toFixed(1)); hgTop.setAttribute('height', Math.max(0, tH).toFixed(1));
+            var bH = 20 * p; hgBot.setAttribute('y', (40 - bH).toFixed(1)); hgBot.setAttribute('height', Math.max(0, bH).toFixed(1));
+            hgStr.setAttribute('opacity', (p > 0.01 && p < 0.99) ? '0.7' : '0');
+        }
+        function hgLoop()
+        {
+            if (hgFlip) return;
+            if (!hgTs) hgTs = Date.now();
+            var p = Math.min(1, (Date.now() - hgTs) / 15000);
+            hgDraw(p);
+            if (p >= 1) { hgFlip = true; hgDraw(1); hgStr.setAttribute('opacity', '0'); setTimeout(function(){ hgDraw(0); hgTs = null; hgFlip = false; },300); }
+        }
+        function onHourglassClick()
+        {
+            var pulse = document.getElementById('syncPulse');
+            if (pulse) { pulse.className = 'sync-pulse'; void pulse.offsetWidth; pulse.className = 'sync-pulse active'; }
+            if (hgCont) { hgCont.style.opacity = '1'; setTimeout(function(){ hgCont.style.opacity = ''; },1000); }
+            hgDraw(0); hgTs = null; hgFlip = false;
+            syncCheck();
+            console.log('[SYNC] Forçado via ampulheta');
+        }
+        function updateHgMode(brk)
+        {
+            var c = brk ? '#4caf50' : '#7b1fa2';
+            if (hgTop) hgTop.setAttribute('fill', c);
+            if (hgBot) hgBot.setAttribute('fill', c);
+            if (hgStr) hgStr.setAttribute('fill', c);
+        }
+
+        var gradeHoras = new Array(24).fill(0);
+        function gradeAddMinutos(h, m) { if (h >= 0 && h < 24 && m > 0) { gradeHoras[h] += m; gradeRefresh(); } }
+        function gradeRefresh()
+        {
+            var mount = document.getElementById('gradeMount'); if (!mount) return;
+            var hoje = new Date(), dias = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
+            var nowMin = hoje.getHours() * 60 + hoje.getMinutes();
+            var html = '<table style=""width:100%;border-collapse:separate;border-spacing:2px;table-layout:fixed;""><tr>';
+            for (var h = 0; h < 24; h += 2)
+            {
+                var m = (gradeHoras[h] || 0) + (gradeHoras[h + 1] || 0);
+                var cor = m === 0 ? '#252525' : m <= 15 ? '#3d1454' : m <= 30 ? '#5c1a7a' : m <= 59 ? '#7b1fa2' : m <= 79 ? '#8e24aa' : '#ab47bc';
+                var cur = (h <= hoje.getHours() && hoje.getHours() < h + 2);
+                var brd = 'none'; if (cur) { var pot = m + ((h + 2) * 60 - nowMin) * (60 / 75); brd = pot >= 80 ? '2px solid #FFD700' : '2px solid #ce93d8'; }
+                var lbl = m > 0 ? Math.round(m) + '' : '';
+                var tip = dias[hoje.getDay()] + ' ' + (h < 10 ? '0' : '') + h + ':00 [' + lbl + 'min]';
+                html += '<td style=""background:' + cor + ';border:' + brd + ';border-radius:3px;height:26px;text-align:center;vertical-align:middle;font-size:8px;font-weight:700;color:' + (m >= 60 ? '#e0e0e0' : '#999') + ';padding:0;"" data-tip=""' + tip + '"">' + lbl + '</td>';
+            }
+            html += '</tr></table>'; mount.innerHTML = html;
+        }
+
+        function initTooltip()
+        {
+            var tip = null, delay = null, mx = 0, my = 0;
+            function gT() { if (!tip) tip = document.getElementById('customTooltip'); return tip; }
+            function sT(t) { var e = gT(); if (!e) return; e.innerHTML = t; pT(e); e.style.display = 'block'; }
+            function pT(e) { var l = mx + 4; if (mx > 255) l = mx - e.offsetWidth - 4; e.style.left = l + 'px'; e.style.top = (my + 22) + 'px'; }
+            function hT() { var e = gT(); if (e) e.style.display = 'none'; if (delay) { clearTimeout(delay); delay = null; } }
+            function fT(el) { while (el && el.nodeType === 1) { var t = el.getAttribute && el.getAttribute('data-tip'); if (t) return t; el = el.parentNode; } return null; }
+            document.body.addEventListener('mousemove', function(e){ mx = e.clientX; my = e.clientY; var el = gT(); if (el && el.style.display !== 'none') pT(el); });
+            document.body.addEventListener('mouseover', function(e){ var t = fT(e.target); if (!t) { hT(); return; } if (delay) clearTimeout(delay); delay = setTimeout(function(){ sT(t); },0); });
+            document.body.addEventListener('mouseout', function(){ hT(); });
+        }
+
+        var cfg = {
+    syncInterval:  15,
+    saveInterval:  30,
+    minMinutes:    0.5,
+    focoMinutes:   60,
+    breakMinutes:  15
 };
 
-var _syncTimer = null;
-var _saveTimer = null;
+        var _syncTimer = null;
+        var _saveTimer = null;
 
-function loadSettings() {
-    try {
-        var s = JSON.parse(localStorage.getItem('pwCfg') || 'null');
-        if (s) {
-            cfg.syncInterval = s.syncInterval || cfg.syncInterval;
-            cfg.saveInterval = s.saveInterval || cfg.saveInterval;
-            cfg.minMinutes   = s.minMinutes   || cfg.minMinutes;
-            cfg.focoMinutes  = s.focoMinutes  || cfg.focoMinutes;
-            cfg.breakMinutes = s.breakMinutes || cfg.breakMinutes;
+        function loadSettings()
+        {
+            try
+            {
+                var s = JSON.parse(localStorage.getItem('pwCfg') || 'null');
+                if (s)
+                {
+                    cfg.syncInterval = s.syncInterval || cfg.syncInterval;
+                    cfg.saveInterval = s.saveInterval || cfg.saveInterval;
+                    cfg.minMinutes = s.minMinutes || cfg.minMinutes;
+                    cfg.focoMinutes = s.focoMinutes || cfg.focoMinutes;
+                    cfg.breakMinutes = s.breakMinutes || cfg.breakMinutes;
+                }
+            }
+            catch (e) { }
+            applySettings();
+            syncInputsFromCfg();
         }
-    } catch(e) {}
-    applySettings();
-    syncInputsFromCfg();
-}
 
-function applySettings() {
-    // Reinicia timers com novos intervalos
-    if (_syncTimer) clearInterval(_syncTimer);
-    if (_saveTimer) clearInterval(_saveTimer);
-    _syncTimer = setInterval(syncCheck,   cfg.syncInterval * 1000);
-    _saveTimer = setInterval(saveTimeAcc, cfg.saveInterval * 1000);
-    console.log('[CFG] sync=' + cfg.syncInterval + 's save=' + cfg.saveInterval + 's minMin=' + cfg.minMinutes + ' foco=' + cfg.focoMinutes + 'min break=' + cfg.breakMinutes + 'min');
-}
+        function applySettings()
+        {
+            if (_syncTimer) clearInterval(_syncTimer);
+            if (_saveTimer) clearInterval(_saveTimer);
+            _syncTimer = setInterval(syncCheck, cfg.syncInterval * 1000);
+            _saveTimer = setInterval(saveTimeAcc, cfg.saveInterval * 1000);
+            console.log('[CFG] sync=' + cfg.syncInterval + 's save=' + cfg.saveInterval + 's minMin=' + cfg.minMinutes + ' foco=' + cfg.focoMinutes + 'min break=' + cfg.breakMinutes + 'min');
+        }
 
-function syncInputsFromCfg() {
-    var f = function(id, val) { var el=document.getElementById(id); if(el) el.value=val; };
-    f('cfgSync',   cfg.syncInterval);
-    f('cfgSave',   cfg.saveInterval);
-    f('cfgMinMin', cfg.minMinutes);
-    f('cfgFoco',   cfg.focoMinutes);
-    f('cfgBreak',  cfg.breakMinutes);
-}
+        function syncInputsFromCfg()
+        {
+            var f = function(id, val) { var el = document.getElementById(id); if (el) el.value = val; }
+            ;
+            f('cfgSync', cfg.syncInterval);
+            f('cfgSave', cfg.saveInterval);
+            f('cfgMinMin', cfg.minMinutes);
+            f('cfgFoco', cfg.focoMinutes);
+            f('cfgBreak', cfg.breakMinutes);
+        }
 
-function saveSettings() {
-    var g = function(id) { return parseFloat(document.getElementById(id).value); };
-    cfg.syncInterval = Math.max(5,   Math.min(300, g('cfgSync')   || 15));
-    cfg.saveInterval = Math.max(10,  Math.min(600, g('cfgSave')   || 30));
-    cfg.minMinutes   = Math.max(0.1, Math.min(5,   g('cfgMinMin') || 0.5));
-    cfg.focoMinutes  = Math.max(1,   Math.min(120, g('cfgFoco')   || 60));
-    cfg.breakMinutes = Math.max(1,   Math.min(60,  g('cfgBreak')  || 15));
-    try { localStorage.setItem('pwCfg', JSON.stringify(cfg)); } catch(e) {}
-    applySettings();
-    syncInputsFromCfg();
-    var fb = document.getElementById('spFeedback');
-    if (fb) { fb.textContent = 'Salvo!'; setTimeout(function(){ fb.textContent=''; }, 2000); }
-    console.log('[CFG] Configuracoes salvas');
-}
+        function saveSettings()
+        {
+            var g = function(id) { return parseFloat(document.getElementById(id).value); }
+            ;
+            cfg.syncInterval = Math.max(5, Math.min(300, g('cfgSync') || 15));
+            cfg.saveInterval = Math.max(10, Math.min(600, g('cfgSave') || 30));
+            cfg.minMinutes = Math.max(0.1, Math.min(5, g('cfgMinMin') || 0.5));
+            cfg.focoMinutes = Math.max(1, Math.min(120, g('cfgFoco') || 60));
+            cfg.breakMinutes = Math.max(1, Math.min(60, g('cfgBreak') || 15));
+            try { localStorage.setItem('pwCfg', JSON.stringify(cfg)); } catch (e) { }
+            applySettings();
+            syncInputsFromCfg();
+            var fb = document.getElementById('spFeedback');
+            if (fb) { fb.textContent = 'Salvo!'; setTimeout(function(){ fb.textContent = ''; }, 2000); }
+            console.log('[CFG] Configuracoes salvas');
+        }
 
-function togglePanel() {
-    var panel   = document.getElementById('settingsPanel');
-    var overlay = document.getElementById('settingsOverlay');
-    if (!panel) return;
-    var opening = !panel.classList.contains('open');
-    panel.classList.toggle('open');
-    overlay.classList.toggle('open');
-    if (opening) syncInputsFromCfg();
-}
+        function togglePanel()
+        {
+            var panel = document.getElementById('settingsPanel');
+            var overlay = document.getElementById('settingsOverlay');
+            if (!panel) return;
+            var opening = !panel.classList.contains('open');
+            panel.classList.toggle('open');
+            overlay.classList.toggle('open');
+            if (opening) syncInputsFromCfg();
+        }
 
-// =============================================================================
-// HELPERS
-// =============================================================================
-
-function shouldProcess(dict, id) {
-    var COOLDOWN = 5*60*1000;
-    if (dict[id] && Date.now()-dict[id] < COOLDOWN) return false;
-    dict[id] = Date.now(); return true;
-}
-function dateToday() { var d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
-function dateNow()   { return dateToday()+' '+new Date().toTimeString().slice(0,8); }
-function fmtDateTime(d) { return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+d.toTimeString().slice(0,8); }
-function pad(n) { return n < 10 ? '0'+n : ''+n; }";
+        function shouldProcess(dict, id)
+        {
+            var COOLDOWN = 5 * 60 * 1000;
+            if (dict[id] && Date.now() - dict[id] < COOLDOWN) return false;
+            dict[id] = Date.now(); return true;
+        }
+        function dateToday() { var d = new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+        function dateNow() { return dateToday() + ' ' + new Date().toTimeString().slice(0, 8); }
+        function fmtDateTime(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + d.toTimeString().slice(0, 8); }
+        function pad(n) { return n < 10 ? '0' + n : '' + n; }";
     }
 }
