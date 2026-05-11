@@ -1,12 +1,11 @@
-using Microsoft.Web.WebView2.Core;
-using Microsoft.Web.WebView2.WinForms;
 using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
-using System.Xml.Linq;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
 
 namespace PomodoroWidget
 {
@@ -100,6 +99,14 @@ namespace PomodoroWidget
             Directory.CreateDirectory(tempDir);
             string htmlFile = Path.Combine(tempDir, "index.html");
             File.WriteAllText(htmlFile, BuildHtml(), System.Text.Encoding.UTF8);
+
+            // Copia alert.mp3 da pasta do .exe para o tempDir sempre (garante atualização)
+            string alertSrc = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "alert.mp3");
+            string alertDst = Path.Combine(tempDir, "alert.mp3");
+            if (File.Exists(alertSrc))
+                File.Copy(alertSrc, alertDst, overwrite: true);
+            else
+                Log("AVISO: alert.mp3 não encontrado em " + alertSrc);
 
             webBrowser1.CoreWebView2.SetVirtualHostNameToFolderMapping(
                 "pomodoro.local",
@@ -256,6 +263,9 @@ $@"<!DOCTYPE html>
     </div>
     <button class='sp-save' onclick='saveSettings()'>Salvar</button>
     <div class='sp-feedback' id='spFeedback'></div>
+    <div class='sp-section' style='margin-top:14px;'>Sessão</div>
+    <button class='sp-reset' onclick='confirmarReset()'>↺ Zerar sessão local</button>
+    <div class='sp-feedback' id='spFeedbackReset'></div>
   </div>
 </div>
 <div id='settingsOverlay' class='settings-overlay' onclick='togglePanel()'></div>
@@ -272,12 +282,42 @@ $@"<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Overlay fim de foco -->
+<div id='fimFocoOverlay' style='display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;'>
+  <div style='position:absolute;top:50%;left:50%;width:300px;margin:-100px 0 0 -150px;background:#1a1a2e;border:2px solid #4caf50;border-radius:10px;padding:16px 18px;'>
+    <div style='color:#a5d6a7;font-size:13px;font-weight:700;margin-bottom:6px;'>🎯 FOCO CONCLUÍDO!</div>
+    <div style='color:#c8e6c9;font-size:11px;margin-bottom:14px;'>Parabéns! Hora de descansar por <b id='fimFocoBreakMin'></b> minutos.</div>
+    <button onclick='fecharFimFoco()' style='width:100%;background:#388e3c;color:#fff;border:none;border-radius:6px;padding:8px;font-size:12px;font-weight:700;cursor:pointer;'>Iniciar Descanso</button>
+  </div>
+</div>
+
+<!-- Overlay fim de descanso -->
+<div id='fimDescansoOverlay' style='display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;'>
+  <div style='position:absolute;top:50%;left:50%;width:300px;margin:-100px 0 0 -150px;background:#1a1a2e;border:2px solid #7b1fa2;border-radius:10px;padding:16px 18px;'>
+    <div style='color:#ce93d8;font-size:13px;font-weight:700;margin-bottom:6px;'>✅ DESCANSO CONCLUÍDO!</div>
+    <div style='color:#e0c8f0;font-size:11px;margin-bottom:14px;'>Descansou bem? Hora de voltar ao foco!</div>
+    <button onclick='fecharFimDescanso()' style='width:100%;background:#7b1fa2;color:#fff;border:none;border-radius:6px;padding:8px;font-size:12px;font-weight:700;cursor:pointer;'>Iniciar Foco</button>
+  </div>
+</div>
+
 <!-- Overlay tempo estimado excedido -->
 <div id='tempoExcedidoOverlay' style='display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;'>
   <div style='position:absolute;top:50%;left:50%;width:300px;margin:-100px 0 0 -150px;background:#1a1a2e;border:2px solid #f6ad55;border-radius:10px;padding:16px 18px;'>
     <div style='color:#f6ad55;font-size:12px;font-weight:700;margin-bottom:4px;'>⏰ TEMPO ESTIMADO EXCEDIDO</div>
     <div id='tempoExcedidoMsg' style='color:#fbd38d;font-size:11px;margin-bottom:14px;'></div>
     <button onclick='fecharTempoExcedido()' style='width:100%;background:#b7791f;color:#fff;border:none;border-radius:6px;padding:8px;font-size:12px;font-weight:700;cursor:pointer;'>Continuar</button>
+  </div>
+</div>
+
+<!-- Overlay confirmação reset sessão -->
+<div id='resetConfirmOverlay' style='display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;'>
+  <div style='position:absolute;top:50%;left:50%;width:300px;margin:-90px 0 0 -150px;background:#1a1a2e;border:2px solid #718096;border-radius:10px;padding:16px 18px;'>
+    <div style='color:#e2e8f0;font-size:12px;font-weight:700;margin-bottom:6px;'>↺ ZERAR SESSÃO LOCAL</div>
+    <div style='color:#a0aec0;font-size:11px;margin-bottom:14px;'>Isso vai zerar o timer, sessão atual, total de hoje e a grade de horas. Dados já salvos no servidor não são afetados.</div>
+    <div style='display:flex;gap:8px;'>
+      <button onclick='document.getElementById(""resetConfirmOverlay"").style.display=""none""' style='flex:1;background:rgba(255,255,255,.08);color:#a0aec0;border:none;border-radius:6px;padding:8px;font-size:12px;font-weight:700;cursor:pointer;'>Cancelar</button>
+      <button onclick='resetSessaoConfirmado()' style='flex:1;background:#c53030;color:#fff;border:none;border-radius:6px;padding:8px;font-size:12px;font-weight:700;cursor:pointer;'>Zerar</button>
+    </div>
   </div>
 </div>
 
@@ -347,6 +387,8 @@ body{background:#1E1E1E;color:#fff;font-family:'Segoe UI',sans-serif;overflow:hi
 .sp-input:focus{outline:none;border-color:#7b1fa2;}
 .sp-save{width:100%;margin-top:16px;padding:8px;background:#7b1fa2;border:none;border-radius:6px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;transition:background .2s;}
 .sp-save:hover{background:#8e24aa;}
+.sp-reset{width:100%;margin-top:8px;padding:7px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#b0b8c1;font-size:11px;font-weight:600;cursor:pointer;transition:background .2s;}
+.sp-reset:hover{background:rgba(255,80,80,.15);color:#ff6b6b;border-color:rgba(255,80,80,.3);}
 .sp-feedback{font-size:10px;color:#a5d6a7;text-align:center;margin-top:8px;min-height:14px;}";
 
         private string BuildJs() => @"
@@ -386,6 +428,12 @@ var processedQErradas     = {};
 var processedAnotacoes    = {};
 
 var tempoExcedidoNotificado = false;
+var alarmAudio = null;
+
+function getAlarm() {
+    if (!alarmAudio) { alarmAudio = new Audio('alert.mp3'); alarmAudio.loop = false; }
+    return alarmAudio;
+}
 
 document.addEventListener('DOMContentLoaded', function() {
     var hdr = document.getElementById('pomodoroHeader');
@@ -647,6 +695,7 @@ function stopTimer() {
     if (hdr) hdr.classList.remove('running', 'break');
     if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
     if (!isBreakTime) { pauseStartTs = Date.now(); startPauseDisplay(); }
+    else { pauseStartTs = null; }
     saveState();
 }
 
@@ -665,21 +714,43 @@ function tick() {
 function handleTimerComplete() {
     stopTimer();
     if (!isBreakTime) {
+        // Foco acabou → prepara break mas mostra overlay antes de iniciar
         isBreakTime = true; currentTime = cfg.breakMinutes * 60;
         var badge = document.getElementById('pomodoroSessionType');
         if (badge) { badge.textContent = 'Descanso'; badge.className = 'session-badge break'; badge.style.display = ''; }
         document.getElementById('pomodoroHeader').classList.add('break');
-        savePausa(15, 'pausa', 'descanso_pomodoro');
+        savePausa(cfg.breakMinutes, 'pausa', 'descanso_pomodoro');
+        updateHgMode(true); updateDisplay(); saveState();
+        // Overlay + alarme
+        var bEl = document.getElementById('fimFocoBreakMin');
+        if (bEl) bEl.textContent = cfg.breakMinutes;
+        document.getElementById('fimFocoOverlay').style.display = 'block';
+        try { var a = getAlarm(); a.currentTime = 0; a.play(); } catch(e) {}
     } else {
+        // Descanso acabou → prepara foco mas mostra overlay antes de iniciar
         isBreakTime = false; currentTime = cfg.focoMinutes * 60;
         var badge = document.getElementById('pomodoroSessionType');
         if (badge) badge.style.display = 'none';
         document.getElementById('pomodoroHeader').classList.remove('break');
+        updateHgMode(false); updateDisplay(); saveState();
+        // Overlay + alarme
+        document.getElementById('fimDescansoOverlay').style.display = 'block';
+        try { var a = getAlarm(); a.currentTime = 0; a.play(); } catch(e) {}
     }
-    updateHgMode(isBreakTime);
-    updateDisplay(); saveState();
-    setTimeout(_startTick, 1000);
 }
+
+function fecharFimFoco() {
+    document.getElementById('fimFocoOverlay').style.display = 'none';
+    try { if (alarmAudio) { alarmAudio.pause(); alarmAudio.currentTime = 0; } } catch(e) {}
+    _startTick();
+}
+
+function fecharFimDescanso() {
+    document.getElementById('fimDescansoOverlay').style.display = 'none';
+    try { if (alarmAudio) { alarmAudio.pause(); alarmAudio.currentTime = 0; } } catch(e) {}
+    _startTick();
+}
+
 
 function checkTempoExcedido() {
     if (!studyingTempoEstimado || tempoExcedidoNotificado || isBreakTime) return;
@@ -694,198 +765,179 @@ function showTempoExcedido(minutosAtual) {
     var o = document.getElementById('tempoExcedidoOverlay');
     var m = document.getElementById('tempoExcedidoMsg');
     if (!o) return;
-    if (m) m.textContent = 'Você estudou ' + Math.round(minutosAtual) + ' min na tarefa '+ studyingTaskName + ' (estimado: ' + studyingTempoEstimado + ' min).';
+    if (m) m.textContent = 'Você estudou ' + Math.round(minutosAtual) + ' min na tarefa [' + studyingTaskName + '] (estimado: ' + studyingTempoEstimado + ' min).';
     o.style.display = 'block';
+    try { var a = getAlarm(); a.currentTime = 0; a.play(); } catch(e) { console.warn('[ALARM]', e); }
 }
 
-function fecharTempoExcedido()
-        {
-            var o = document.getElementById('tempoExcedidoOverlay');
-            if (o) o.style.display = 'none';
-        }
+function fecharTempoExcedido() {
+    var o = document.getElementById('tempoExcedidoOverlay');
+    if (o) o.style.display = 'none';
+    try { if (alarmAudio) { alarmAudio.pause(); alarmAudio.currentTime = 0; } } catch(e) {}
+}
 
-        function startPauseDisplay()
-        {
-            var block = document.getElementById('pauseStatBlock');
-            if (block) block.style.display = '';
-            if (pauseDisplayInterval) clearInterval(pauseDisplayInterval);
-            pauseDisplayInterval = setInterval(function() {
-                if (!pauseStartTs) return;
-                var e = Math.floor((Date.now() - pauseStartTs) / 1000);
-                var m = Math.floor(e / 60), s = e % 60;
-                var el = document.getElementById('pauseElapsed');
-                var lb = document.getElementById('pauseStatLabel');
-                if (!el) return;
-                el.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
-                if (m >= 30) { el.style.color = '#c53030'; if (lb) { lb.textContent = '⚠ Desvio'; lb.style.color = '#c53030'; } }
-                else if (m >= 10) { el.style.color = '#e53e3e'; if (lb) { lb.textContent = '⚠ Desvio'; lb.style.color = '#e53e3e'; } }
-                else { el.style.color = '#7b1fa2'; if (lb) { lb.textContent = 'Desvio'; lb.style.color = ''; } }
-            }, 1000);
-        }
+function startPauseDisplay() {
+    var block = document.getElementById('pauseStatBlock');
+    if (block) block.style.display = '';
+    if (pauseDisplayInterval) clearInterval(pauseDisplayInterval);
+    pauseDisplayInterval = setInterval(function() {
+        if (!pauseStartTs) return;
+        var e = Math.floor((Date.now() - pauseStartTs) / 1000);
+        var m = Math.floor(e / 60), s = e % 60;
+        var el = document.getElementById('pauseElapsed');
+        var lb = document.getElementById('pauseStatLabel');
+        if (!el) return;
+        el.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+        if      (m >= 30) { el.style.color = '#c53030'; if (lb) { lb.textContent = '⚠ Desvio'; lb.style.color = '#c53030'; } }
+        else if (m >= 10) { el.style.color = '#e53e3e'; if (lb) { lb.textContent = '⚠ Desvio'; lb.style.color = '#e53e3e'; } }
+        else              { el.style.color = '#7b1fa2'; if (lb) { lb.textContent = 'Desvio'; lb.style.color = ''; } }
+    }, 1000);
+}
 
-        function stopPauseDisplay()
-        {
-            if (pauseDisplayInterval) { clearInterval(pauseDisplayInterval); pauseDisplayInterval = null; }
-            var block = document.getElementById('pauseStatBlock');
-            if (block) block.style.display = 'none';
-            if (!pauseStartTs) return 0;
-            var dur = (Date.now() - pauseStartTs) / 60000;
-            pauseStartTs = null;
-            return dur;
-        }
+function stopPauseDisplay() {
+    if (pauseDisplayInterval) { clearInterval(pauseDisplayInterval); pauseDisplayInterval = null; }
+    var block = document.getElementById('pauseStatBlock');
+    if (block) block.style.display = 'none';
+    if (!pauseStartTs) return 0;
+    var dur = (Date.now() - pauseStartTs) / 60000;
+    pauseStartTs = null;
+    return dur;
+}
 
-        function showDesvioOverlay(dur)
-        {
-            var o = document.getElementById('desvioOverlay');
-            var d = document.getElementById('desvioOverlayDur');
-            var i = document.getElementById('desvioMotivoInput');
-            if (!o) return;
-            if (d) d.textContent = Math.round(dur) + ' min de desvio registrado';
-            if (i) i.value = '';
-            o.style.display = 'block';
-            setTimeout(function() { if (i) i.focus(); }, 100);
-        }
+function showDesvioOverlay(dur) {
+    var o = document.getElementById('desvioOverlay');
+    var d = document.getElementById('desvioOverlayDur');
+    var i = document.getElementById('desvioMotivoInput');
+    if (!o) return;
+    if (d) d.textContent = Math.round(dur) + ' min de desvio registrado';
+    if (i) i.value = '';
+    o.style.display = 'block';
+    setTimeout(function() { if (i) i.focus(); }, 100);
+}
 
-        function hideDesvioOverlay()
-        {
-            var o = document.getElementById('desvioOverlay');
-            if (o) o.style.display = 'none';
-        }
+function hideDesvioOverlay() {
+    var o = document.getElementById('desvioOverlay');
+    if (o) o.style.display = 'none';
+}
 
-        function sendPendingDesvio(motivo)
-        {
-            if (!pendingDesvio) return;
-            savePausa(pendingDesvio.dur, 'desvio', motivo);
-            pendingDesvio = null;
-        }
+function sendPendingDesvio(motivo) {
+    if (!pendingDesvio) return;
+    savePausa(pendingDesvio.dur, 'desvio', motivo);
+    pendingDesvio = null;
+}
 
-        function confirmDesvioMotivo()
-        {
-            var i = document.getElementById('desvioMotivoInput');
-            hideDesvioOverlay();
-            sendPendingDesvio(i ? i.value.trim() : '');
-            _startTick();
-        }
+function confirmDesvioMotivo() {
+    var i = document.getElementById('desvioMotivoInput');
+    hideDesvioOverlay();
+    sendPendingDesvio(i ? i.value.trim() : '');
+    _startTick();
+}
 
-        function updateDisplay()
-        {
-            var m = Math.floor(currentTime / 60), s = currentTime % 60;
-            var str = m + ':' + (s < 10 ? '0' : '') + s;
-            var timer = document.getElementById('pomodoroTimer');
-            var mini = document.getElementById('pomodoroTimeMini');
-            var bar = document.getElementById('pomodoroProgressBar');
-            if (timer) { timer.textContent = str; timer.className = 'timer' + (isBreakTime ? ' break' : ''); }
-            if (mini) { mini.textContent = str; mini.className = 'time-mini' + (isBreakTime ? ' break' : ''); }
-            var total = isBreakTime ? 900 : 3600;
-            if (bar) { bar.style.width = (((total - currentTime) / total) * 100) + '%'; bar.className = 'progress-bar' + (isBreakTime ? ' break' : ''); }
-            var cs = document.getElementById('currentSession');
-            var tt = document.getElementById('totalToday');
-            if (cs) cs.textContent = fmtSec(currentSessionSeconds);
-            if (tt) tt.textContent = fmtSec(totalTodaySeconds);
-        }
+function updateDisplay() {
+    var m = Math.floor(currentTime / 60), s = currentTime % 60;
+    var str = m + ':' + (s < 10 ? '0' : '') + s;
+    var timer = document.getElementById('pomodoroTimer');
+    var mini  = document.getElementById('pomodoroTimeMini');
+    var bar   = document.getElementById('pomodoroProgressBar');
+    if (timer) { timer.textContent = str; timer.className = 'timer' + (isBreakTime ? ' break' : ''); }
+    if (mini)  { mini.textContent  = str; mini.className  = 'time-mini' + (isBreakTime ? ' break' : ''); }
+    var total = isBreakTime ? 900 : 3600;
+    if (bar)   { bar.style.width = (((total - currentTime) / total) * 100) + '%'; bar.className = 'progress-bar' + (isBreakTime ? ' break' : ''); }
+    var cs = document.getElementById('currentSession');
+    var tt = document.getElementById('totalToday');
+    if (cs) cs.textContent = fmtSec(currentSessionSeconds);
+    if (tt) tt.textContent = fmtSec(totalTodaySeconds);
+}
 
-        function fmtSec(s)
-        {
-            var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
-            return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (ss < 10 ? '0' : '') + ss;
-        }
+function fmtSec(s) {
+    var h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s % 60;
+    return (h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(ss<10?'0':'')+ss;
+}
 
-        function saveState()
-        {
-            try { localStorage.setItem('pState', JSON.stringify({ currentTime: currentTime, isBreakTime: isBreakTime, isRunning: isRunning, currentSessionSeconds: currentSessionSeconds, totalTodaySeconds: totalTodaySeconds })); }
-            catch (e) { }
-        }
-        function loadState()
-        {
-            try
-            {
-                var s = JSON.parse(localStorage.getItem('pState') || 'null');
-                if (!s) return;
-                currentTime = s.currentTime || 3600; isBreakTime = s.isBreakTime || false;
-                currentSessionSeconds = s.currentSessionSeconds || 0; totalTodaySeconds = s.totalTodaySeconds || 0;
-                updateHgMode(isBreakTime);
-                if (s.isRunning) _startTick();
-            }
-            catch (e) { }
-        }
+function saveState() {
+    try { localStorage.setItem('pState', JSON.stringify({ currentTime: currentTime, isBreakTime: isBreakTime, isRunning: isRunning, currentSessionSeconds: currentSessionSeconds, totalTodaySeconds: totalTodaySeconds })); }
+    catch(e) {}
+}
+function loadState() {
+    try {
+        var s = JSON.parse(localStorage.getItem('pState') || 'null');
+        if (!s) return;
+        currentTime = s.currentTime || 3600; isBreakTime = s.isBreakTime || false;
+        currentSessionSeconds = s.currentSessionSeconds || 0; totalTodaySeconds = s.totalTodaySeconds || 0;
+        updateHgMode(isBreakTime);
+        if (s.isRunning) _startTick();
+    } catch(e) {}
+}
 
-        var hgTop, hgBot, hgStr, hgCont, hgTs, hgFlip = false;
+var hgTop, hgBot, hgStr, hgCont, hgTs, hgFlip = false;
 
-        function initHourglass()
-        {
-            hgTop = document.getElementById('hgTopSand');
-            hgBot = document.getElementById('hgBotSand');
-            hgStr = document.getElementById('hgStream');
-            hgCont = document.getElementById('hourglassContainer');
-            if (hgTop) { hgDraw(0); setInterval(hgLoop, 50); }
-        }
-        function hgDraw(p)
-        {
-            if (!hgTop) return; p = Math.max(0, Math.min(1, p));
-            var tH = 20 * (1 - p); hgTop.setAttribute('y', (4 + 20 - tH).toFixed(1)); hgTop.setAttribute('height', Math.max(0, tH).toFixed(1));
-            var bH = 20 * p; hgBot.setAttribute('y', (40 - bH).toFixed(1)); hgBot.setAttribute('height', Math.max(0, bH).toFixed(1));
-            hgStr.setAttribute('opacity', (p > 0.01 && p < 0.99) ? '0.7' : '0');
-        }
-        function hgLoop()
-        {
-            if (hgFlip) return;
-            if (!hgTs) hgTs = Date.now();
-            var p = Math.min(1, (Date.now() - hgTs) / 15000);
-            hgDraw(p);
-            if (p >= 1) { hgFlip = true; hgDraw(1); hgStr.setAttribute('opacity', '0'); setTimeout(function(){ hgDraw(0); hgTs = null; hgFlip = false; },300); }
-        }
-        function onHourglassClick()
-        {
-            var pulse = document.getElementById('syncPulse');
-            if (pulse) { pulse.className = 'sync-pulse'; void pulse.offsetWidth; pulse.className = 'sync-pulse active'; }
-            if (hgCont) { hgCont.style.opacity = '1'; setTimeout(function(){ hgCont.style.opacity = ''; },1000); }
-            hgDraw(0); hgTs = null; hgFlip = false;
-            syncCheck();
-            console.log('[SYNC] Forçado via ampulheta');
-        }
-        function updateHgMode(brk)
-        {
-            var c = brk ? '#4caf50' : '#7b1fa2';
-            if (hgTop) hgTop.setAttribute('fill', c);
-            if (hgBot) hgBot.setAttribute('fill', c);
-            if (hgStr) hgStr.setAttribute('fill', c);
-        }
+function initHourglass() {
+    hgTop = document.getElementById('hgTopSand');
+    hgBot = document.getElementById('hgBotSand');
+    hgStr = document.getElementById('hgStream');
+    hgCont = document.getElementById('hourglassContainer');
+    if (hgTop) { hgDraw(0); setInterval(hgLoop, 50); }
+}
+function hgDraw(p) {
+    if (!hgTop) return; p = Math.max(0, Math.min(1, p));
+    var tH = 20*(1-p); hgTop.setAttribute('y',(4+20-tH).toFixed(1)); hgTop.setAttribute('height',Math.max(0,tH).toFixed(1));
+    var bH = 20*p;     hgBot.setAttribute('y',(40-bH).toFixed(1));   hgBot.setAttribute('height',Math.max(0,bH).toFixed(1));
+    hgStr.setAttribute('opacity',(p>0.01&&p<0.99)?'0.7':'0');
+}
+function hgLoop() {
+    if (hgFlip) return;
+    if (!hgTs) hgTs = Date.now();
+    var p = Math.min(1, (Date.now()-hgTs)/15000);
+    hgDraw(p);
+    if (p >= 1) { hgFlip=true; hgDraw(1); hgStr.setAttribute('opacity','0'); setTimeout(function(){hgDraw(0);hgTs=null;hgFlip=false;},300); }
+}
+function onHourglassClick() {
+    var pulse = document.getElementById('syncPulse');
+    if (pulse) { pulse.className='sync-pulse'; void pulse.offsetWidth; pulse.className='sync-pulse active'; }
+    if (hgCont) { hgCont.style.opacity='1'; setTimeout(function(){hgCont.style.opacity='';},1000); }
+    hgDraw(0); hgTs=null; hgFlip=false;
+    syncCheck();
+    console.log('[SYNC] Forçado via ampulheta');
+}
+function updateHgMode(brk) {
+    var c = brk ? '#4caf50' : '#7b1fa2';
+    if (hgTop) hgTop.setAttribute('fill',c);
+    if (hgBot) hgBot.setAttribute('fill',c);
+    if (hgStr) hgStr.setAttribute('fill',c);
+}
 
-        var gradeHoras = new Array(24).fill(0);
-        function gradeAddMinutos(h, m) { if (h >= 0 && h < 24 && m > 0) { gradeHoras[h] += m; gradeRefresh(); } }
-        function gradeRefresh()
-        {
-            var mount = document.getElementById('gradeMount'); if (!mount) return;
-            var hoje = new Date(), dias = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
-            var nowMin = hoje.getHours() * 60 + hoje.getMinutes();
-            var html = '<table style=""width:100%;border-collapse:separate;border-spacing:2px;table-layout:fixed;""><tr>';
-            for (var h = 0; h < 24; h += 2)
-            {
-                var m = (gradeHoras[h] || 0) + (gradeHoras[h + 1] || 0);
-                var cor = m === 0 ? '#252525' : m <= 15 ? '#3d1454' : m <= 30 ? '#5c1a7a' : m <= 59 ? '#7b1fa2' : m <= 79 ? '#8e24aa' : '#ab47bc';
-                var cur = (h <= hoje.getHours() && hoje.getHours() < h + 2);
-                var brd = 'none'; if (cur) { var pot = m + ((h + 2) * 60 - nowMin) * (60 / 75); brd = pot >= 80 ? '2px solid #FFD700' : '2px solid #ce93d8'; }
-                var lbl = m > 0 ? Math.round(m) + '' : '';
-                var tip = dias[hoje.getDay()] + ' ' + (h < 10 ? '0' : '') + h + ':00 [' + lbl + 'min]';
-                html += '<td style=""background:' + cor + ';border:' + brd + ';border-radius:3px;height:26px;text-align:center;vertical-align:middle;font-size:8px;font-weight:700;color:' + (m >= 60 ? '#e0e0e0' : '#999') + ';padding:0;"" data-tip=""' + tip + '"">' + lbl + '</td>';
-            }
-            html += '</tr></table>'; mount.innerHTML = html;
-        }
+var gradeHoras = new Array(24).fill(0);
+function gradeAddMinutos(h, m) { if (h>=0&&h<24&&m>0) { gradeHoras[h]+=m; gradeRefresh(); } }
+function gradeRefresh() {
+    var mount = document.getElementById('gradeMount'); if (!mount) return;
+    var hoje = new Date(), dias=['Dom','Seg','Ter','Qua','Qui','Sex','Sab'];
+    var nowMin = hoje.getHours()*60+hoje.getMinutes();
+    var html = '<table style=""width:100%;border-collapse:separate;border-spacing:2px;table-layout:fixed;""><tr>';
+    for (var h=0;h<24;h+=2) {
+        var m=(gradeHoras[h]||0)+(gradeHoras[h+1]||0);
+        var cor=m===0?'#252525':m<=15?'#3d1454':m<=30?'#5c1a7a':m<=59?'#7b1fa2':m<=79?'#8e24aa':'#ab47bc';
+        var cur=(h<=hoje.getHours()&&hoje.getHours()<h+2);
+        var brd='none'; if(cur){var pot=m+((h+2)*60-nowMin)*(60/75);brd=pot>=80?'2px solid #FFD700':'2px solid #ce93d8';}
+        var lbl=m>0?Math.round(m)+'':'';
+        var tip=dias[hoje.getDay()]+' '+(h<10?'0':'')+h+':00 ['+lbl+'min]';
+        html+='<td style=""background:'+cor+';border:'+brd+';border-radius:3px;height:26px;text-align:center;vertical-align:middle;font-size:8px;font-weight:700;color:'+(m>=60?'#e0e0e0':'#999')+';padding:0;"" data-tip=""'+tip+'"">'+lbl+'</td>';
+    }
+    html+='</tr></table>'; mount.innerHTML=html;
+}
 
-        function initTooltip()
-        {
-            var tip = null, delay = null, mx = 0, my = 0;
-            function gT() { if (!tip) tip = document.getElementById('customTooltip'); return tip; }
-            function sT(t) { var e = gT(); if (!e) return; e.innerHTML = t; pT(e); e.style.display = 'block'; }
-            function pT(e) { var l = mx + 4; if (mx > 255) l = mx - e.offsetWidth - 4; e.style.left = l + 'px'; e.style.top = (my + 22) + 'px'; }
-            function hT() { var e = gT(); if (e) e.style.display = 'none'; if (delay) { clearTimeout(delay); delay = null; } }
-            function fT(el) { while (el && el.nodeType === 1) { var t = el.getAttribute && el.getAttribute('data-tip'); if (t) return t; el = el.parentNode; } return null; }
-            document.body.addEventListener('mousemove', function(e){ mx = e.clientX; my = e.clientY; var el = gT(); if (el && el.style.display !== 'none') pT(el); });
-            document.body.addEventListener('mouseover', function(e){ var t = fT(e.target); if (!t) { hT(); return; } if (delay) clearTimeout(delay); delay = setTimeout(function(){ sT(t); },0); });
-            document.body.addEventListener('mouseout', function(){ hT(); });
-        }
+function initTooltip() {
+    var tip=null,delay=null,mx=0,my=0;
+    function gT(){if(!tip)tip=document.getElementById('customTooltip');return tip;}
+    function sT(t){var e=gT();if(!e)return;e.innerHTML=t;pT(e);e.style.display='block';}
+    function pT(e){var l=mx+4;if(mx>255)l=mx-e.offsetWidth-4;e.style.left=l+'px';e.style.top=(my+22)+'px';}
+    function hT(){var e=gT();if(e)e.style.display='none';if(delay){clearTimeout(delay);delay=null;}}
+    function fT(el){while(el&&el.nodeType===1){var t=el.getAttribute&&el.getAttribute('data-tip');if(t)return t;el=el.parentNode;}return null;}
+    document.body.addEventListener('mousemove',function(e){mx=e.clientX;my=e.clientY;var el=gT();if(el&&el.style.display!=='none')pT(el);});
+    document.body.addEventListener('mouseover',function(e){var t=fT(e.target);if(!t){hT();return;}if(delay)clearTimeout(delay);delay=setTimeout(function(){sT(t);},0);});
+    document.body.addEventListener('mouseout',function(){hT();});
+}
 
-        var cfg = {
+var cfg = {
     syncInterval:  15,
     saveInterval:  30,
     minMinutes:    0.5,
@@ -893,85 +945,106 @@ function fecharTempoExcedido()
     breakMinutes:  15
 };
 
-        var _syncTimer = null;
-        var _saveTimer = null;
+var _syncTimer = null;
+var _saveTimer = null;
 
-        function loadSettings()
-        {
-            try
-            {
-                var s = JSON.parse(localStorage.getItem('pwCfg') || 'null');
-                if (s)
-                {
-                    cfg.syncInterval = s.syncInterval || cfg.syncInterval;
-                    cfg.saveInterval = s.saveInterval || cfg.saveInterval;
-                    cfg.minMinutes = s.minMinutes || cfg.minMinutes;
-                    cfg.focoMinutes = s.focoMinutes || cfg.focoMinutes;
-                    cfg.breakMinutes = s.breakMinutes || cfg.breakMinutes;
-                }
-            }
-            catch (e) { }
-            applySettings();
-            syncInputsFromCfg();
+function loadSettings() {
+    try {
+        var s = JSON.parse(localStorage.getItem('pwCfg') || 'null');
+        if (s) {
+            cfg.syncInterval = s.syncInterval || cfg.syncInterval;
+            cfg.saveInterval = s.saveInterval || cfg.saveInterval;
+            cfg.minMinutes   = s.minMinutes   || cfg.minMinutes;
+            cfg.focoMinutes  = s.focoMinutes  || cfg.focoMinutes;
+            cfg.breakMinutes = s.breakMinutes || cfg.breakMinutes;
         }
+    } catch(e) {}
+    applySettings();
+    syncInputsFromCfg();
+}
 
-        function applySettings()
-        {
-            if (_syncTimer) clearInterval(_syncTimer);
-            if (_saveTimer) clearInterval(_saveTimer);
-            _syncTimer = setInterval(syncCheck, cfg.syncInterval * 1000);
-            _saveTimer = setInterval(saveTimeAcc, cfg.saveInterval * 1000);
-            console.log('[CFG] sync=' + cfg.syncInterval + 's save=' + cfg.saveInterval + 's minMin=' + cfg.minMinutes + ' foco=' + cfg.focoMinutes + 'min break=' + cfg.breakMinutes + 'min');
-        }
+function applySettings() {
+    if (_syncTimer) clearInterval(_syncTimer);
+    if (_saveTimer) clearInterval(_saveTimer);
+    _syncTimer = setInterval(syncCheck,   cfg.syncInterval * 1000);
+    _saveTimer = setInterval(saveTimeAcc, cfg.saveInterval * 1000);
+    console.log('[CFG] sync=' + cfg.syncInterval + 's save=' + cfg.saveInterval + 's minMin=' + cfg.minMinutes + ' foco=' + cfg.focoMinutes + 'min break=' + cfg.breakMinutes + 'min');
+}
 
-        function syncInputsFromCfg()
-        {
-            var f = function(id, val) { var el = document.getElementById(id); if (el) el.value = val; }
-            ;
-            f('cfgSync', cfg.syncInterval);
-            f('cfgSave', cfg.saveInterval);
-            f('cfgMinMin', cfg.minMinutes);
-            f('cfgFoco', cfg.focoMinutes);
-            f('cfgBreak', cfg.breakMinutes);
-        }
+function syncInputsFromCfg() {
+    var f = function(id, val) { var el=document.getElementById(id); if(el) el.value=val; };
+    f('cfgSync',   cfg.syncInterval);
+    f('cfgSave',   cfg.saveInterval);
+    f('cfgMinMin', cfg.minMinutes);
+    f('cfgFoco',   cfg.focoMinutes);
+    f('cfgBreak',  cfg.breakMinutes);
+}
 
-        function saveSettings()
-        {
-            var g = function(id) { return parseFloat(document.getElementById(id).value); }
-            ;
-            cfg.syncInterval = Math.max(5, Math.min(300, g('cfgSync') || 15));
-            cfg.saveInterval = Math.max(10, Math.min(600, g('cfgSave') || 30));
-            cfg.minMinutes = Math.max(0.1, Math.min(5, g('cfgMinMin') || 0.5));
-            cfg.focoMinutes = Math.max(1, Math.min(120, g('cfgFoco') || 60));
-            cfg.breakMinutes = Math.max(1, Math.min(60, g('cfgBreak') || 15));
-            try { localStorage.setItem('pwCfg', JSON.stringify(cfg)); } catch (e) { }
-            applySettings();
-            syncInputsFromCfg();
-            var fb = document.getElementById('spFeedback');
-            if (fb) { fb.textContent = 'Salvo!'; setTimeout(function(){ fb.textContent = ''; }, 2000); }
-            console.log('[CFG] Configuracoes salvas');
-        }
+function saveSettings() {
+    var g = function(id) { return parseFloat(document.getElementById(id).value); };
+    cfg.syncInterval = Math.max(5,   Math.min(300, g('cfgSync')   || 15));
+    cfg.saveInterval = Math.max(10,  Math.min(600, g('cfgSave')   || 30));
+    cfg.minMinutes   = Math.max(0.1, Math.min(5,   g('cfgMinMin') || 0.5));
+    cfg.focoMinutes  = Math.max(1,   Math.min(120, g('cfgFoco')   || 60));
+    cfg.breakMinutes = Math.max(1,   Math.min(60,  g('cfgBreak')  || 15));
+    try { localStorage.setItem('pwCfg', JSON.stringify(cfg)); } catch(e) {}
+    applySettings();
+    syncInputsFromCfg();
+    var fb = document.getElementById('spFeedback');
+    if (fb) { fb.textContent = 'Salvo!'; setTimeout(function(){ fb.textContent=''; }, 2000); }
+    console.log('[CFG] Configuracoes salvas');
+}
 
-        function togglePanel()
-        {
-            var panel = document.getElementById('settingsPanel');
-            var overlay = document.getElementById('settingsOverlay');
-            if (!panel) return;
-            var opening = !panel.classList.contains('open');
-            panel.classList.toggle('open');
-            overlay.classList.toggle('open');
-            if (opening) syncInputsFromCfg();
-        }
+function confirmarReset() {
+    var o = document.getElementById('resetConfirmOverlay');
+    if (o) o.style.display = 'block';
+}
 
-        function shouldProcess(dict, id)
-        {
-            var COOLDOWN = 5 * 60 * 1000;
-            if (dict[id] && Date.now() - dict[id] < COOLDOWN) return false;
-            dict[id] = Date.now(); return true;
-        }
-        function dateToday() { var d = new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
-        function dateNow() { return dateToday() + ' ' + new Date().toTimeString().slice(0, 8); }
-        function fmtDateTime(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + d.toTimeString().slice(0, 8); }
-        function pad(n) { return n < 10 ? '0' + n : '' + n; }";
+function resetSessaoConfirmado() {
+    var o = document.getElementById('resetConfirmOverlay');
+    if (o) o.style.display = 'none';
+    resetSessao();
+}
+
+function resetSessao() {
+    if (isRunning) stopTimer();
+    currentSessionSeconds = 0;
+    totalTodaySeconds     = 0;
+    currentTime           = cfg.focoMinutes * 60;
+    isBreakTime           = false;
+    accumulatedSeconds    = 0;
+    lastSavedSessionSec   = 0;
+    pauseStartTs          = null;
+    tempoExcedidoNotificado = false;
+    gradeHoras            = new Array(24).fill(0);
+    stopPauseDisplay();
+    updateHgMode(false);
+    updateDisplay();
+    gradeRefresh();
+    saveState();
+    var fb = document.getElementById('spFeedbackReset');
+    if (fb) { fb.textContent = 'Sessão zerada!'; setTimeout(function(){ fb.textContent=''; }, 2000); }
+    console.log('[RESET] Sessão local zerada');
+}
+
+function togglePanel() {
+    var panel   = document.getElementById('settingsPanel');
+    var overlay = document.getElementById('settingsOverlay');
+    if (!panel) return;
+    var opening = !panel.classList.contains('open');
+    panel.classList.toggle('open');
+    overlay.classList.toggle('open');
+    if (opening) syncInputsFromCfg();
+}
+
+function shouldProcess(dict, id) {
+    var COOLDOWN = 5*60*1000;
+    if (dict[id] && Date.now()-dict[id] < COOLDOWN) return false;
+    dict[id] = Date.now(); return true;
+}
+function dateToday() { var d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+function dateNow()   { return dateToday()+' '+new Date().toTimeString().slice(0,8); }
+function fmtDateTime(d) { return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+d.toTimeString().slice(0,8); }
+function pad(n) { return n < 10 ? '0'+n : ''+n; }";
     }
 }
