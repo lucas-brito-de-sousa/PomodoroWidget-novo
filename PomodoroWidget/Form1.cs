@@ -958,8 +958,12 @@ function gradeRefresh() {
         var cur=(h<=hoje.getHours()&&hoje.getHours()<h+2);
         var brd='none'; if(cur){var pot=m+((h+2)*60-nowMin)*(60/75);brd=pot>=80?'2px solid #FFD700':'2px solid #ce93d8';}
         var lbl=m>0?Math.round(m)+'':'';
+        var cellContent = lbl;
+        if (m >= 80) {
+            cellContent = '<div style=""position:relative;width:100%;height:26px;""><svg viewBox=""0 0 24 24"" style=""position:absolute;top:0;left:0;width:100%;height:100%;""><polygon points=""12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"" fill=""none"" stroke=""#FFD700"" stroke-width=""1.5""/></svg><span style=""position:relative;z-index:1;"">' + lbl + '</span></div>';
+        }
         var tip=dias[hoje.getDay()]+' '+(h<10?'0':'')+h+':00 ['+lbl+'min]';
-        html+='<td style=""background:'+cor+';border:'+brd+';border-radius:3px;height:26px;text-align:center;vertical-align:middle;font-size:8px;font-weight:700;color:'+(m>=60?'#e0e0e0':'#999')+';padding:0;"" data-tip=""'+tip+'"">'+lbl+'</td>';
+        html+='<td style=""background:'+cor+';border:'+brd+';border-radius:3px;height:26px;text-align:center;vertical-align:middle;font-size:8px;font-weight:700;color:'+(m>=60?'#e0e0e0':'#999')+';padding:0;"" data-tip=""'+tip+'"">'+cellContent+'</td>';
     }
     html+='</tr></table>'; mount.innerHTML=html;
 }
