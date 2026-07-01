@@ -33,6 +33,8 @@ namespace PomodoroWidget
 
         private string appDataPath;
         private bool isWebBrowserReady = false;
+        private NotifyIcon trayIcon;
+        private bool _isExiting = false;
 
         // ── autenticação loopback (OAuth + PKCE) ────────────────────────────
         private TaskCompletionSource<string> _authCodeTcs;
@@ -47,6 +49,7 @@ namespace PomodoroWidget
                 "PomodoroWidget");
             Directory.CreateDirectory(appDataPath);
             SetupForm();
+            SetupTrayIcon();
             Log("Widget iniciado — WebView2 + fetch()");
         }
 
@@ -224,8 +227,59 @@ namespace PomodoroWidget
             SetRoundRegion(22);
         }
 
+        private void SetupTrayIcon()
+        {
+            Icon appIcon;
+            try
+            {
+                string iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "icon.ico");
+                appIcon = File.Exists(iconPath)
+                    ? new Icon(iconPath)
+                    : Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            }
+            catch
+            {
+                appIcon = SystemIcons.Application;
+            }
+
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Abrir Pomodoro Widget", null, (s, e) => ShowWidget());
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Fechar", null, (s, e) =>
+            {
+                _isExiting = true;
+                trayIcon.Visible = false;
+                Application.Exit();
+            });
+
+            trayIcon = new NotifyIcon
+            {
+                Icon = appIcon,
+                Text = "Pomodoro Widget",
+                Visible = true,
+                ContextMenuStrip = menu
+            };
+            trayIcon.DoubleClick += (s, e) => ShowWidget();
+        }
+
+        private void ShowWidget()
+        {
+            this.Show();
+            this.WindowState = FormWindowState.Normal;
+            SetWindowPos(this.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            this.Activate();
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            if (!_isExiting)
+            {
+                // Fechar pela UI do widget só esconde — o app continua rodando na bandeja
+                e.Cancel = true;
+                this.Hide();
+                return;
+            }
+
             if (isWebBrowserReady)
                 _ = webBrowser1.ExecuteScriptAsync("onAppClosing()");
             Log("Widget fechado");
