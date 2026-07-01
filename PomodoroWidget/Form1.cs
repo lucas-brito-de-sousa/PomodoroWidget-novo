@@ -1,11 +1,18 @@
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
 using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Windows.Forms;
-using Microsoft.Web.WebView2.Core;
-using Microsoft.Web.WebView2.WinForms;
 
 namespace PomodoroWidget
 {
@@ -27,6 +34,11 @@ namespace PomodoroWidget
         private string appDataPath;
         private bool isWebBrowserReady = false;
 
+        // ── autenticação loopback (OAuth + PKCE) ────────────────────────────
+        private TaskCompletionSource<string> _authCodeTcs;
+        private string _authState;
+        private string _authCodeVerifier;
+
         public Form1()
         {
             InitializeComponent();
@@ -35,10 +47,17 @@ namespace PomodoroWidget
                 "PomodoroWidget");
             Directory.CreateDirectory(appDataPath);
             SetupForm();
-            SetupWebBrowser();
             Log("Widget iniciado — WebView2 + fetch()");
         }
 
+
+        protected override async void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            await SetupWebBrowser();
+
+
+        }
         private void SetupForm()
         {
             this.Text = "Pomodoro Widget";
@@ -80,9 +99,12 @@ namespace PomodoroWidget
             get { var cp = base.CreateParams; cp.ClassStyle |= 0x20000; return cp; }
         }
 
-        private async void SetupWebBrowser()
+        private async Task SetupWebBrowser()
         {
-            await webBrowser1.EnsureCoreWebView2Async(null);
+            string userDataFolder = Path.Combine(appDataPath, "WebView2Data");
+            Directory.CreateDirectory(userDataFolder);
+            var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+            await webBrowser1.EnsureCoreWebView2Async(env);
 
             var s = webBrowser1.CoreWebView2.Settings;
             s.AreDevToolsEnabled = true;
@@ -169,6 +191,18 @@ namespace PomodoroWidget
                 try { if (!f.IsDisposed) f.Log("[JS] " + msg); }
                 catch { }
             }));
+
+            public void ConectarSistema()
+            {
+                if (f.IsDisposed) return;
+                _ = f.ConectarSistemaAsync();
+            }
+
+            public void SubmitManualCode(string code)
+            {
+                if (f.IsDisposed) return;
+                f.SubmitManualCode(code);
+            }
         }
 
         public void DoMinimize()
@@ -208,6 +242,213 @@ namespace PomodoroWidget
                 Debug.WriteLine(msg);
             }
             catch { }
+        }
+
+        // ══════════════════════════════════════════════════════════════════
+        //  🔗 CONEXÃO AUTOMÁTICA — OAuth Authorization Code + PKCE (loopback)
+        //  Mesmo padrão usado pelo VSCode/Claude Code para autenticar via
+        //  navegador externo: abre o browser, escuta um callback local em
+        //  127.0.0.1, e também aceita colar o código manualmente como fallback.
+        // ══════════════════════════════════════════════════════════════════
+
+        private void RunOnUi(Action action)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired) BeginInvoke(action);
+            else action();
+        }
+
+        // Escapa uma string C# para uso seguro como literal de string em JS/JSON,
+        // sem depender de System.Text.Json (não disponível no .NET Framework < 5).
+        private static string JsString(string s)
+        {
+            if (s == null) s = "";
+            var sb = new StringBuilder("\"");
+            foreach (char c in s)
+            {
+                switch (c)
+                {
+                    case '\\': sb.Append("\\\\"); break;
+                    case '"': sb.Append("\\\""); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': break;
+                    default: sb.Append(c); break;
+                }
+            }
+            sb.Append('"');
+            return sb.ToString();
+        }
+
+        private static string ExtractJsonStringValue(string json, string key)
+        {
+            var m = Regex.Match(json, "\"" + key + "\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
+            if (!m.Success) return null;
+            return m.Groups[1].Value.Replace("\\\"", "\"").Replace("\\\\", "\\");
+        }
+
+        private static bool ExtractJsonBoolValue(string json, string key)
+        {
+            var m = Regex.Match(json, "\"" + key + "\"\\s*:\\s*(true|false)");
+            return m.Success && m.Groups[1].Value == "true";
+        }
+
+        private void NotificarUi(string mensagem, bool erro = false)
+        {
+            if (!isWebBrowserReady) return;
+            string color = erro ? "#fc8181" : "#a5d6a7";
+            string js = "var el=document.getElementById('spTokenFeedback'); if(el){ el.textContent="
+                + JsString(mensagem) + "; el.style.color='" + color + "'; }";
+            RunOnUi(() => { _ = webBrowser1.ExecuteScriptAsync(js); });
+        }
+
+        private static int GetFreeTcpPort()
+        {
+            var l = new TcpListener(IPAddress.Loopback, 0);
+            l.Start();
+            int port = ((IPEndPoint)l.LocalEndpoint).Port;
+            l.Stop();
+            return port;
+        }
+
+        private static string Base64UrlEncode(byte[] data) =>
+            Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+        // Chamado pelo HostObject quando o usuário cola o código manualmente
+        // (fallback caso o redirecionamento automático não chegue no app).
+        public void SubmitManualCode(string code)
+        {
+            if (_authCodeTcs != null && !_authCodeTcs.Task.IsCompleted && !string.IsNullOrWhiteSpace(code))
+                _authCodeTcs.TrySetResult(code.Trim());
+        }
+
+        public async Task ConectarSistemaAsync()
+        {
+            HttpListener listener = null;
+            try
+            {
+                _authState = Guid.NewGuid().ToString("N");
+
+                byte[] verifierBytes = new byte[32];
+                using (var rng = RandomNumberGenerator.Create()) { rng.GetBytes(verifierBytes); }
+                _authCodeVerifier = Base64UrlEncode(verifierBytes);
+
+                byte[] challengeBytes;
+                using (var sha = SHA256.Create())
+                {
+                    challengeBytes = sha.ComputeHash(Encoding.ASCII.GetBytes(_authCodeVerifier));
+                }
+                string codeChallenge = Base64UrlEncode(challengeBytes);
+
+                int port = GetFreeTcpPort();
+                string redirectUri = $"http://127.0.0.1:{port}/callback/";
+
+                listener = new HttpListener();
+                listener.Prefixes.Add(redirectUri);
+                listener.Start();
+
+                _authCodeTcs = new TaskCompletionSource<string>();
+
+                string authUrl =
+                    $"https://sistemadetarefas.online/desktop-auth/connect.php?redirect_uri={Uri.EscapeDataString(redirectUri)}&state={_authState}&code_challenge={codeChallenge}";
+
+                NotificarUi("Abrindo navegador para login…");
+
+                try { Process.Start(new ProcessStartInfo(authUrl) { UseShellExecute = true }); }
+                catch (Exception ex)
+                {
+                    Log("Falha ao abrir navegador: " + ex.Message);
+                    NotificarUi("Não abriu o navegador automaticamente. Copie: " + authUrl, erro: true);
+                }
+
+                // Caminho automático — escuta o redirecionamento de loopback.
+                var currentListener = listener;
+                var currentTcs = _authCodeTcs;
+                var expectedState = _authState;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var ctx = await currentListener.GetContextAsync();
+                        var q = ctx.Request.QueryString;
+
+                        // Em vez de mostrar a página de sucesso aqui no 127.0.0.1, redireciona
+                        // de volta pro próprio domínio — o usuário só vê o localhost por uma
+                        // fração de segundo (igual ao fluxo do Claude Code).
+                        ctx.Response.Redirect("https://sistemadetarefas.online/desktop-auth/sucesso.php?app=pomodoro-widget");
+                        ctx.Response.OutputStream.Close();
+
+                        if (q["state"] == expectedState && !string.IsNullOrEmpty(q["code"]))
+                            currentTcs.TrySetResult(q["code"]);
+                    }
+                    catch (Exception ex) { Log("Erro no listener de callback: " + ex.Message); }
+                });
+
+                var timeoutTask = Task.Delay(TimeSpan.FromMinutes(3));
+                var completed = await Task.WhenAny(_authCodeTcs.Task, timeoutTask);
+
+                try { listener.Stop(); } catch { }
+
+                if (completed == timeoutTask)
+                {
+                    NotificarUi("Tempo esgotado. Tente novamente.", erro: true);
+                    return;
+                }
+
+                string authCode = await _authCodeTcs.Task;
+                NotificarUi("Trocando código pelo token…");
+
+                string token = await TrocarCodigoPorTokenAsync(authCode, _authCodeVerifier, redirectUri);
+                if (string.IsNullOrEmpty(token))
+                {
+                    NotificarUi("Falha ao obter o token. Tente novamente.", erro: true);
+                    return;
+                }
+
+                RunOnUi(() =>
+                {
+                    _ = webBrowser1.ExecuteScriptAsync("onAutoTokenReceived(" + JsString(token) + ");");
+                });
+                Log("Conexão automática concluída com sucesso.");
+            }
+            catch (Exception ex)
+            {
+                Log("Erro em ConectarSistemaAsync: " + ex.Message);
+                NotificarUi("Erro: " + ex.Message, erro: true);
+            }
+            finally
+            {
+                try { listener?.Stop(); } catch { }
+            }
+        }
+
+        private async Task<string> TrocarCodigoPorTokenAsync(string code, string verifier, string redirectUri)
+        {
+            try
+            {
+                using (var http = new HttpClient())
+                {
+                    string body = "{\"code\":" + JsString(code)
+                        + ",\"code_verifier\":" + JsString(verifier)
+                        + ",\"redirect_uri\":" + JsString(redirectUri) + "}";
+
+                    HttpResponseMessage resp = await http.PostAsync(
+                        "https://sistemadetarefas.online/desktop-auth/exchange.php",
+                        new StringContent(body, Encoding.UTF8, "application/json"));
+
+                    string json = await resp.Content.ReadAsStringAsync();
+
+                    if (ExtractJsonBoolValue(json, "success"))
+                        return ExtractJsonStringValue(json, "token");
+
+                    Log("exchange_code falhou: " + json);
+                    return null;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("Erro ao trocar código por token: " + ex.Message);
+                return null;
+            }
         }
 
         private string BuildHtml() =>
@@ -321,7 +562,14 @@ $@"<!DOCTYPE html>
     <div class='sp-section' style='margin-top:12px;'>Histórico de xícaras</div>
     <div id='coffeeHistory'><div class='sp-history-empty'>Nenhuma xícara ainda hoje ☕</div></div>
     <div class='sp-section' style='margin-top:14px;'>🔑 Autenticação</div>
-    <div style='font-size:10px;color:#7f848e;margin-bottom:8px;line-height:1.4;'>Cole o token gerado em<br>sistemadetarefas.online → Configurações → Gerar token</div>
+    <button class='sp-save' onclick='conectarAutomaticamente()'>🔗 Conectar automaticamente</button>
+    <div class='sp-feedback' id='spTokenFeedback'></div>
+    <div id='manualCodeBox' style='display:none;margin-top:6px;'>
+      <input id='cfgManualCode' type='text' placeholder='Cole o código de autorização aqui...'
+        style='width:100%;box-sizing:border-box;padding:6px 7px;border:1px solid rgba(123,31,162,.4);border-radius:5px;background:#0d0d1a;color:#e0c8f0;font-size:10px;font-family:monospace;'>
+      <button class='sp-save' style='margin-top:6px;' onclick=""hostCall('SubmitManualCode', document.getElementById('cfgManualCode').value)"">Continuar</button>
+    </div>
+    <div style='font-size:10px;color:#7f848e;margin:10px 0 8px;line-height:1.4;'>Ou cole o token manualmente:<br>sistemadetarefas.online → Configurações → Gerar token</div>
     <textarea id='cfgApiToken' rows='3'
       style='width:100%;background:#0d0d1a;border:1px solid rgba(123,31,162,.4);border-radius:5px;color:#e0c8f0;font-size:10px;padding:6px 7px;font-family:monospace;resize:none;box-sizing:border-box;'
       placeholder='Cole o token aqui...'></textarea>
@@ -470,17 +718,17 @@ body{background:#1E1E1E;color:#fff;font-family:'Segoe UI',sans-serif;overflow:hi
 
         private string BuildJs() => @"
 var API = 'https://sistemadetarefas.online';
-var UID = 2;
 
 // Retorna headers de autenticação Bearer.
-// Se não houver token salvo, cai no X-App-Key legado para não quebrar.
+// Sem token salvo, não autentica — chamadas vão falhar com 401 até o
+// usuário conectar a conta (fluxo OAuth+PKCE em Configurações).
 function authHeaders() {
     var token = localStorage.getItem('api_bearer_token') || '';
-    if (token) {
-        return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token };
+    if (!token) {
+        console.warn('[AUTH] Nenhum token configurado — conecte sua conta em Configurações.');
+        return { 'Content-Type': 'application/json' };
     }
-    // fallback legado enquanto o token não for configurado
-    return { 'Content-Type': 'application/json', 'X-App-Key': 'STI_DESKTOP_K3Y_2025_XrQ9mVpL', 'X-Client': 'PomodoroWidget' };
+    return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token };
 }
 
 function saveApiToken() {
@@ -500,6 +748,32 @@ function saveApiToken() {
     console.log('[AUTH] Token Bearer salvo no localStorage');
 }
 
+// Dispara o fluxo de conexão automática (loopback + PKCE) no C#.
+// Mostra o campo de código manual desde já, como fallback visível
+// caso o redirecionamento automático não chegue no app.
+function conectarAutomaticamente() {
+    var box = document.getElementById('manualCodeBox');
+    if (box) box.style.display = 'block';
+    var fb = document.getElementById('spTokenFeedback');
+    if (fb) {
+        fb.textContent = 'Abrindo navegador… se não detectar automaticamente, cole o código acima.';
+        fb.style.color = '#b0b8c1';
+    }
+    hostCall('ConectarSistema');
+}
+
+// Chamado pelo C# (Form1.ConectarSistemaAsync) quando o token final chega.
+function onAutoTokenReceived(token) {
+    localStorage.setItem('api_bearer_token', token);
+    var fb = document.getElementById('spTokenFeedback');
+    if (fb) { fb.textContent = '✅ Conectado automaticamente!'; fb.style.color = '#a5d6a7'; }
+    var box = document.getElementById('manualCodeBox');
+    if (box) box.style.display = 'none';
+    var input = document.getElementById('cfgApiToken');
+    if (input) input.placeholder = '••••••••' + token.slice(-6) + ' (conectado automaticamente)';
+    console.log('[AUTH] Token recebido via conexão automática e salvo.');
+}
+
 function hostCall(method) {
     var args = Array.prototype.slice.call(arguments, 1);
     try { var h = window.chrome.webview.hostObjects.sync.external; h[method].apply(h, args); }
@@ -515,7 +789,7 @@ var tickInterval          = null;
 
 var studyingTaskId        = null;
 var studyingTaskName      = 'Nenhuma tarefa';
-var studyingUserId        = UID;
+var studyingUserId        = null;
 var studyingProjectId     = null;
 var studyingProjectName   = '';
 var studyingTempoEstimado = null;
@@ -746,7 +1020,7 @@ function updateStudyingTask(d) {
         if (studyingTaskId && accumulatedSeconds > 0) saveTimeAcc();
         studyingTaskId        = d.studyingTaskId;
         studyingTaskName      = d.taskName    || 'Tarefa';
-        studyingUserId        = d.userId      || UID;
+        studyingUserId        = d.userId      || null;
         studyingProjectId     = d.projectId   || null;
         studyingProjectName   = d.projectName || '';
         accumulatedSeconds    = 0;
@@ -1370,5 +1644,5 @@ function saveCoffeeSettings() {
     var fb = document.getElementById('spCoffeeFeedback');
     if (fb) { fb.textContent = 'Salvo! Timer reiniciado.'; setTimeout(function(){ fb.textContent=''; }, 2000); }
 }";
-    } 
+    }
 }
