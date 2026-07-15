@@ -350,7 +350,7 @@ namespace PomodoroWidget
         {
             if (!isWebBrowserReady) return;
             string color = erro ? "#fc8181" : "#a5d6a7";
-            string js = "var el=document.getElementById('spTokenFeedback'); if(el){ el.textContent="
+            string js = "var el=document.getElementById('spAutoConnectFeedback'); if(el){ el.textContent="
                 + JsString(mensagem) + "; el.style.color='" + color + "'; }";
             RunOnUi(() => { _ = webBrowser1.ExecuteScriptAsync(js); });
         }
@@ -521,7 +521,15 @@ $@"<!DOCTYPE html>
     </div>
     <div class='controls'>
       <button class='btn-burger' id='btnBurger' onclick='togglePanel()' data-tip='Configurações'>&#9776;</button>
-      <button class='btn-min'   id='pomodoroMinimize' onclick='hostCall(""MinimizeWidget"")'>▼</button>
+      <div class='btn-min-wrap' id='btnMinWrap'>
+        <button class='btn-min'   id='pomodoroMinimize' onclick='minimizeButtonClick(event)'>▼</button>
+        <span class='dev-badge' id='devDoubleBadge' style='display:none;' data-tip='Contagem pela metade ativa'>½</span>
+        <div class='dev-min-menu' id='devMinMenu' style='display:none;'>
+          <button onclick='devMinMenuMinimize(event)'>▼ Minimizar</button>
+          <button onclick='devMinMenuToggleDouble(event)' id='devMinMenuDoubleBtn'>⧉ Contar pela metade</button>
+          <button onclick='devMinMenuOpenAdminPause(event)' id='devMinMenuAdminPauseBtn'>Pausa administrativa</button>
+        </div>
+      </div>
       <button class='btn-start' id='pomodoroToggle'   onclick='toggleTimer()'>Iniciar</button>
       <button class='btn-close' id='pomodoroClose'    onclick='hostCall(""CloseApp"")'>✕</button>
     </div>
@@ -529,7 +537,10 @@ $@"<!DOCTYPE html>
   <div class='content' id='pomodoroContent'>
     <div class='timer-row'>
       <span class='coffee-emoji' id='coffeeEmoji' onclick='coffeeConfirm()' data-tip='Hora do café! Clique para confirmar' style='display:none'>☕</span>
-      <div class='timer' id='pomodoroTimer'>60:00</div>
+      <div class='timer-wrap'>
+        <div class='timer' id='pomodoroTimer'>60:00</div>
+        <span class='dev-half-badge' id='devHalfBadge'>+0,5s</span>
+      </div>
       <div class='hg-wrap' id='hourglassContainer' onclick='onHourglassClick()' data-tip='Clique para sincronizar agora'>
         <svg viewBox='0 0 28 44' width='28' height='44'>
           <line x1='5' y1='2' x2='23' y2='2' stroke='#555' stroke-width='1.5' stroke-linecap='round'/>
@@ -545,6 +556,7 @@ $@"<!DOCTYPE html>
         <div class='sync-pulse' id='syncPulse'></div>
       </div>
       <span class='session-badge' id='pomodoroSessionType' style='display:none'>Descanso</span>
+      <span class='session-badge admin-pause-badge' id='adminPauseBadge' style='display:none'>Pausa administrativa</span>
     </div>
     <div id='gradeMount'></div>
     <div class='progress'><div class='progress-bar' id='pomodoroProgressBar' style='width:0%'></div></div>
@@ -564,18 +576,20 @@ $@"<!DOCTYPE html>
     <button class='sp-close' onclick='togglePanel()'>✕</button>
   </div>
   <div class='sp-body'>
-    <div class='sp-section'>Intervalos de atualização</div>
-    <div class='sp-row'>
-      <label class='sp-label' for='cfgSync'>Sync principal <span class='sp-unit'>(seg)</span></label>
-      <input class='sp-input' id='cfgSync' type='number' min='5' max='300' step='5' value='15'/>
-    </div>
-    <div class='sp-row'>
-      <label class='sp-label' for='cfgSave'>Salvar estudo <span class='sp-unit'>(seg)</span></label>
-      <input class='sp-input' id='cfgSave' type='number' min='10' max='600' step='10' value='30'/>
-    </div>
-    <div class='sp-row'>
-      <label class='sp-label' for='cfgMinMin'>Mínimo p/ salvar <span class='sp-unit'>(min)</span></label>
-      <input class='sp-input' id='cfgMinMin' type='number' min='0.1' max='5' step='0.1' value='0.5'/>
+    <div id='updateIntervalsSection'>
+      <div class='sp-section'>Intervalos de atualização</div>
+      <div class='sp-row'>
+        <label class='sp-label' for='cfgSync'>Sync principal <span class='sp-unit'>(seg)</span></label>
+        <input class='sp-input' id='cfgSync' type='number' min='5' max='300' step='5' value='15'/>
+      </div>
+      <div class='sp-row'>
+        <label class='sp-label' for='cfgSave'>Salvar estudo <span class='sp-unit'>(seg)</span></label>
+        <input class='sp-input' id='cfgSave' type='number' min='10' max='600' step='10' value='30'/>
+      </div>
+      <div class='sp-row'>
+        <label class='sp-label' for='cfgMinMin'>Mínimo p/ salvar <span class='sp-unit'>(min)</span></label>
+        <input class='sp-input' id='cfgMinMin' type='number' min='0.1' max='5' step='0.1' value='0.5'/>
+      </div>
     </div>
     <div class='sp-section' style='margin-top:14px;'>Temporizador</div>
     <div class='sp-row'>
@@ -595,40 +609,66 @@ $@"<!DOCTYPE html>
     <div class='sp-section' style='margin-top:14px;'>Sessão</div>
     <button class='sp-reset' onclick='confirmarReset()'>↺ Zerar sessão local</button>
     <div class='sp-feedback' id='spFeedbackReset'></div>
-    <div class='sp-section' style='margin-top:14px;'>🔒 Bloqueio de Pausa</div>
-    <div class='sp-check-row'>
-      <input class='sp-checkbox' type='checkbox' id='cfgLockPause' onchange='saveLockSettings()'/>
-      <label class='sp-check-label' for='cfgLockPause'>Bloquear pausa quando desvio acumulado exceder % do foco</label>
+    <div class='sp-section sp-section-flex' style='margin-top:14px;'>
+      <span>🛠️ Modo Desenvolvedor</span>
+      <label class='sp-switch' data-tip='Altera o botão ▼ para mostrar um menu com opções extras'>
+        <input type='checkbox' id='cfgDevMode' onchange='saveDevMode()'/>
+        <span class='sp-switch-slider'></span>
+      </label>
     </div>
-    <div class='sp-row'>
-      <label class='sp-label' for='cfgLockPct'>Limite de desvio <span class='sp-unit'>(%)</span></label>
-      <input class='sp-input' id='cfgLockPct' type='number' min='1' max='100' step='1' value='10' onchange='saveLockSettings()'/>
+    <div class='sp-feedback' id='spDevModeFeedback'></div>
+    <div class='sp-section sp-section-flex' style='margin-top:14px;'>
+      <span>🔒 Bloqueio de Pausa</span>
+      <label class='sp-switch' data-tip='Bloquear pausa quando desvio acumulado exceder % do foco'>
+        <input type='checkbox' id='cfgLockPause' onchange='saveLockSettings()'/>
+        <span class='sp-switch-slider'></span>
+      </label>
     </div>
-    <div class='sp-feedback' id='spLockFeedback'></div>
-    <div class='sp-section' style='margin-top:14px;'>☕ Lembrete de Café</div>
-    <div class='sp-row'>
-      <label class='sp-label' for='cfgCoffee'>Intervalo <span class='sp-unit'>(min)</span></label>
-      <input class='sp-input' id='cfgCoffee' type='number' min='1' max='480' step='5' value='120'/>
+    <div id='lockPauseContent'>
+      <div class='sp-row'>
+        <label class='sp-label' for='cfgLockPct'>Limite de desvio <span class='sp-unit'>(%)</span></label>
+        <input class='sp-input' id='cfgLockPct' type='number' min='1' max='100' step='1' value='10' onchange='saveLockSettings()'/>
+      </div>
+      <div class='sp-feedback' id='spLockFeedback'></div>
     </div>
-    <button class='sp-save' style='margin-top:4px;' onclick='saveCoffeeSettings()'>Salvar intervalo</button>
-    <button class='sp-reset' style='margin-top:4px;' onclick='coffeeConfirm()'>↺ Reiniciar temporizador</button>
-    <div class='sp-feedback' id='spCoffeeFeedback'></div>
-    <div class='sp-section' style='margin-top:12px;'>Histórico de xícaras</div>
-    <div id='coffeeHistory'><div class='sp-history-empty'>Nenhuma xícara ainda hoje ☕</div></div>
+    <div class='sp-section sp-section-flex' style='margin-top:14px;'>
+      <span>☕ Lembrete de Café</span>
+      <label class='sp-switch' data-tip='Ativar/desativar lembrete de café'>
+        <input type='checkbox' id='cfgCoffeeEnabled' checked onchange='saveCoffeeEnabled()'/>
+        <span class='sp-switch-slider'></span>
+      </label>
+    </div>
+    <div id='coffeeContent'>
+      <div class='sp-row'>
+        <label class='sp-label' for='cfgCoffee'>Intervalo <span class='sp-unit'>(min)</span></label>
+        <input class='sp-input' id='cfgCoffee' type='number' min='1' max='480' step='5' value='120' onchange='saveCoffeeSettings()'/>
+      </div>
+      <button class='sp-reset' style='margin-top:4px;' onclick='coffeeConfirm()'>☕ Registrar xícara de café</button>
+      <div class='sp-feedback' id='spCoffeeFeedback'></div>
+      <div class='sp-section' style='margin-top:12px;'>Histórico de xícaras</div>
+      <div id='coffeeHistory'><div class='sp-history-empty'>Nenhuma xícara ainda hoje ☕</div></div>
+      <button class='sp-reset' style='margin-top:4px;' onclick='coffeeClearHistory()'>🗑 Limpar histórico</button>
+    </div>
     <div class='sp-section' style='margin-top:14px;'>🔑 Autenticação</div>
     <button class='sp-save' onclick='conectarAutomaticamente()'>🔗 Conectar automaticamente</button>
-    <div class='sp-feedback' id='spTokenFeedback'></div>
+    <div class='sp-feedback' id='spAutoConnectFeedback'></div>
     <div id='manualCodeBox' style='display:none;margin-top:6px;'>
       <input id='cfgManualCode' type='text' placeholder='Cole o código de autorização aqui...'
         style='width:100%;box-sizing:border-box;padding:6px 7px;border:1px solid rgba(123,31,162,.4);border-radius:5px;background:#0d0d1a;color:#e0c8f0;font-size:10px;font-family:monospace;'>
       <button class='sp-save' style='margin-top:6px;' onclick=""hostCall('SubmitManualCode', document.getElementById('cfgManualCode').value)"">Continuar</button>
     </div>
-    <div style='font-size:10px;color:#7f848e;margin:10px 0 8px;line-height:1.4;'>Ou cole o token manualmente:<br>sistemadetarefas.online → Configurações → Gerar token</div>
-    <textarea id='cfgApiToken' rows='3'
-      style='width:100%;background:#0d0d1a;border:1px solid rgba(123,31,162,.4);border-radius:5px;color:#e0c8f0;font-size:10px;padding:6px 7px;font-family:monospace;resize:none;box-sizing:border-box;'
-      placeholder='Cole o token aqui...'></textarea>
-    <button class='sp-save' style='margin-top:6px;' onclick='saveApiToken()'>Salvar token</button>
-    <div class='sp-feedback' id='spTokenFeedback'></div>
+    <div style='margin-top:10px;'>
+      <a href='javascript:void(0)' id='manualTokenToggle' onclick='toggleManualTokenBox()'
+        style='font-size:10px;color:#9d7bb0;text-decoration:underline;cursor:pointer;'>Prefiro colar o token manualmente</a>
+    </div>
+    <div id='manualTokenBox' style='display:none;margin-top:8px;'>
+      <div style='font-size:10px;color:#7f848e;margin-bottom:8px;line-height:1.4;'>sistemadetarefas.online → Configurações → Gerar token</div>
+      <textarea id='cfgApiToken' rows='3'
+        style='width:100%;background:#0d0d1a;border:1px solid rgba(123,31,162,.4);border-radius:5px;color:#e0c8f0;font-size:10px;padding:6px 7px;font-family:monospace;resize:none;box-sizing:border-box;'
+        placeholder='Cole o token aqui...'></textarea>
+      <button class='sp-save' style='margin-top:6px;' onclick='saveApiToken()'>Salvar token</button>
+      <div class='sp-feedback' id='spManualTokenFeedback'></div>
+    </div>
   </div>
 </div>
 <div id='settingsOverlay' class='settings-overlay' onclick='togglePanel()'></div>
@@ -672,6 +712,27 @@ $@"<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Overlay pausa administrativa -->
+<div id='adminPauseOverlay' style='display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;'>
+  <div style='position:absolute;top:50%;left:50%;width:300px;margin:-100px 0 0 -150px;background:#1a1a2e;border:2px solid #2196f3;border-radius:10px;padding:16px 18px;'>
+    <div style='color:#90caf9;font-size:12px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;'>
+      <span>PAUSA ADMINISTRATIVA</span>
+      <span style='position:relative;display:inline-flex;'>
+        <svg onclick='toggleAdminPauseInfoTip(event)' width='16' height='16' viewBox='0 0 16 16' style='cursor:pointer;flex-shrink:0;'>
+          <circle cx='8' cy='8' r='7' fill='none' stroke='#2196f3' stroke-width='1'/>
+          <rect x='7.25' y='4' width='1.5' height='5.3' rx='0.75' fill='#2196f3'/>
+          <circle cx='8' cy='11.5' r='1' fill='#2196f3'/>
+        </svg>
+        <div id='adminPauseInfoTip' style='display:none;position:absolute;top:20px;right:0;width:220px;background:#2a2a35;border:1px solid rgba(255,255,255,.12);border-radius:6px;padding:8px 10px;font-size:10.5px;font-weight:400;color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.4);line-height:1.5;z-index:10;text-align:left;'>
+          Enquanto ativa, o temporizador continua contando normalmente, mas o tempo <b>não</b> é somado à sessão atual, ao total de hoje, nem contado como desvio. Direito de 120 min por dia (até 60 min contínuos por vez) — só desconta o tempo que você realmente usar.
+        </div>
+      </span>
+    </div>
+    <div id='adminPauseSlots' style='margin-bottom:8px;'></div>
+    <button onclick='closeAdminPauseOverlay()' style='margin-top:4px;width:100%;background:rgba(255,255,255,.08);color:#a0aec0;border:none;border-radius:6px;padding:7px;font-size:11px;cursor:pointer;'>Fechar</button>
+  </div>
+</div>
+
 <!-- Overlay confirmação reset sessão -->
 <div id='resetConfirmOverlay' style='display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;'>
   <div style='position:absolute;top:50%;left:50%;width:300px;margin:-90px 0 0 -150px;background:#1a1a2e;border:2px solid #718096;border-radius:10px;padding:16px 18px;'>
@@ -704,17 +765,33 @@ body{background:#1E1E1E;color:#fff;font-family:'Segoe UI',sans-serif;overflow:hi
 .task-title{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .time-mini{background:#7b1fa2;color:#fff;padding:4px 8px;border-radius:12px;font-size:11px;font-weight:bold;font-family:monospace;}
 .time-mini.break{background:#4caf50;}
+.time-mini.adminpause{background:#2196f3;}
 .controls{display:flex;gap:10px;align-items:center;position:relative;z-index:2;}
 .btn-start{background:#7b1fa2;border:none;color:#fff;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;transition:all .3s;margin-left:8px;}
 .btn-start:hover{background:#8e24aa;transform:translateY(-1px);}
 .btn-start.running{background:#e53935;}
 .btn-min,.btn-close{background:rgba(255,255,255,.1);border:none;color:#abb2bf;width:24px;height:24px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:bold;margin-left:8px;transition:all .2s;}
 .btn-min:hover{background:rgba(255,255,255,.2);color:#fff;}
+.btn-min-wrap{position:relative;display:inline-block;}
+.dev-badge{position:absolute;top:-5px;right:-5px;background:#ff9800;color:#1a1a1a;font-size:8px;font-weight:800;line-height:1;padding:2px 3px;border-radius:6px;pointer-events:none;box-shadow:0 0 0 1px #1e1e1e;}
+.dev-min-menu{position:fixed;background:#2a2a35;border:1px solid rgba(255,255,255,.12);border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.4);z-index:9999;display:flex;flex-direction:column;min-width:150px;overflow:hidden;}
+.dev-min-menu button{background:none;border:none;color:#e0e0e0;text-align:left;padding:7px 10px;font-size:11px;cursor:pointer;white-space:nowrap;}
+.dev-min-menu button:hover{background:rgba(255,255,255,.08);}
+.dev-min-menu button.active{color:#ff9800;font-weight:700;}
 .btn-close{background:rgba(244,67,54,.3);color:#ff6b6b;}
 .btn-close:hover{background:rgba(244,67,54,.5);color:#fff;}
 .content{padding:20px;flex:1;display:flex;flex-direction:column;gap:15px;}
 .timer-row{display:flex;align-items:center;justify-content:center;gap:12px;margin:10px 0;}
 .timer{font-size:48px;font-weight:bold;font-family:monospace;color:#7b1fa2;}
+.timer.adminpause{color:#2196f3;}
+.timer-wrap{position:relative;display:inline-block;}
+.dev-half-badge{position:absolute;top:-2px;right:-38px;background:#ff9800;color:#1a1a1a;font-size:10px;font-weight:800;padding:2px 5px;border-radius:8px;opacity:0;pointer-events:none;white-space:nowrap;}
+.dev-half-badge.pulse{animation:devHalfPulse 0.9s ease-out;}
+@keyframes devHalfPulse{
+  0%   { opacity:1; transform:translateY(0);   }
+  70%  { opacity:1; transform:translateY(-6px);}
+  100% { opacity:0; transform:translateY(-10px);}
+}
 .timer.break{color:#4caf50;}
 .hg-wrap{position:relative;cursor:pointer;opacity:.5;transition:opacity .3s,transform .2s;padding:4px;}
 .hg-wrap:hover{opacity:1;transform:scale(1.1);}
@@ -723,9 +800,11 @@ body{background:#1E1E1E;color:#fff;font-family:'Segoe UI',sans-serif;overflow:hi
 @keyframes pulse{0%{width:0;height:0;opacity:.6}100%{width:60px;height:60px;opacity:0}}
 .session-badge{padding:4px 12px;border-radius:20px;background:#7b1fa2;color:#fff;font-size:12px;font-weight:bold;}
 .session-badge.break{background:#4caf50;}
+.session-badge.admin-pause-badge{background:#2196f3;}
 .progress{height:6px;background:#404040;border-radius:3px;margin:15px 0;overflow:hidden;}
 .progress-bar{height:100%;background:#7b1fa2;border-radius:3px;transition:width 1s linear;}
 .progress-bar.break{background:#4caf50;}
+.progress-bar.adminpause{background:#2196f3;}
 .stats{display:flex;justify-content:space-between;}
 .stat{text-align:center;}
 .lbl{font-size:11px;color:#7f848e;margin-bottom:2px;}
@@ -743,6 +822,13 @@ body{background:#1E1E1E;color:#fff;font-family:'Segoe UI',sans-serif;overflow:hi
 .sp-close:hover{color:#ff6b6b;}
 .sp-body{padding:14px 14px 40px;overflow-y:auto;flex:1;}
 .sp-section{font-size:9px;font-weight:700;letter-spacing:1px;color:#7b1fa2;text-transform:uppercase;margin-bottom:10px;border-bottom:1px solid rgba(123,31,162,.25);padding-bottom:4px;}
+.sp-section-flex{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(123,31,162,.25);}
+.sp-switch{position:relative;display:inline-block;width:30px;height:16px;flex-shrink:0;cursor:pointer;}
+.sp-switch input{opacity:0;width:0;height:0;}
+.sp-switch-slider{position:absolute;inset:0;background:#3a3a3a;border-radius:16px;transition:.2s;}
+.sp-switch-slider::before{content:'';position:absolute;height:12px;width:12px;left:2px;top:2px;background:#b0b8c1;border-radius:50%;transition:.2s;}
+.sp-switch input:checked + .sp-switch-slider{background:#7b1fa2;}
+.sp-switch input:checked + .sp-switch-slider::before{transform:translateX(14px);background:#fff;}
 .sp-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:8px;}
 .sp-label{font-size:11px;color:#b0b8c1;flex:1;line-height:1.3;}
 .sp-unit{color:#555;font-size:9px;}
@@ -763,6 +849,8 @@ body{background:#1E1E1E;color:#fff;font-family:'Segoe UI',sans-serif;overflow:hi
 .sp-history-item:last-child{border-bottom:none;}
 .sp-history-time{color:#7b1fa2;font-weight:700;font-family:monospace;}
 .sp-history-empty{font-size:10px;color:#555;text-align:center;padding:8px 0;}
+.sp-history-remove{color:#666;cursor:pointer;font-size:11px;font-weight:700;padding:0 2px;flex-shrink:0;transition:color .15s;}
+.sp-history-remove:hover{color:#fc8181;}
 /* ── Anti-pause lock ── */
 .sp-check-row{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
 .sp-checkbox{width:15px;height:15px;accent-color:#7b1fa2;cursor:pointer;flex-shrink:0;}
@@ -787,7 +875,7 @@ function authHeaders() {
 
 function saveApiToken() {
     var input = document.getElementById('cfgApiToken');
-    var fb    = document.getElementById('spTokenFeedback');
+    var fb    = document.getElementById('spManualTokenFeedback');
     if (!input) return;
     var token = input.value.trim();
     if (!token) {
@@ -802,13 +890,22 @@ function saveApiToken() {
     console.log('[AUTH] Token Bearer salvo no localStorage');
 }
 
+function toggleManualTokenBox() {
+    var box = document.getElementById('manualTokenBox');
+    var link = document.getElementById('manualTokenToggle');
+    if (!box) return;
+    var open = box.style.display !== 'none';
+    box.style.display = open ? 'none' : 'block';
+    if (link) link.textContent = open ? 'Prefiro colar o token manualmente' : 'Ocultar token manual';
+}
+
 // Dispara o fluxo de conexão automática (loopback + PKCE) no C#.
 // Mostra o campo de código manual desde já, como fallback visível
 // caso o redirecionamento automático não chegue no app.
 function conectarAutomaticamente() {
     var box = document.getElementById('manualCodeBox');
     if (box) box.style.display = 'block';
-    var fb = document.getElementById('spTokenFeedback');
+    var fb = document.getElementById('spAutoConnectFeedback');
     if (fb) {
         fb.textContent = 'Abrindo navegador… se não detectar automaticamente, cole o código acima.';
         fb.style.color = '#b0b8c1';
@@ -819,7 +916,7 @@ function conectarAutomaticamente() {
 // Chamado pelo C# (Form1.ConectarSistemaAsync) quando o token final chega.
 function onAutoTokenReceived(token) {
     localStorage.setItem('api_bearer_token', token);
-    var fb = document.getElementById('spTokenFeedback');
+    var fb = document.getElementById('spAutoConnectFeedback');
     if (fb) { fb.textContent = '✅ Conectado automaticamente!'; fb.style.color = '#a5d6a7'; }
     var box = document.getElementById('manualCodeBox');
     if (box) box.style.display = 'none';
@@ -840,6 +937,252 @@ var isBreakTime           = false;
 var currentSessionSeconds = 0;
 var totalTodaySeconds     = 0;
 var tickInterval          = null;
+
+var devModeEnabled        = false;
+var devDoubleCountActive  = false;
+
+var ADMIN_PAUSE_DURATION  = 3600; // 60 min em segundos, fixo por pausa
+var ADMIN_PAUSE_MAX_USES  = 2;
+var adminPauseActive      = false;
+var adminPauseActiveSlot  = -1; // índice da pausa em uso (0 ou 1), -1 se nenhuma
+var adminPauseSecondsLeft = 0;
+var adminPauseSlots       = (function() { var a=[]; for (var i=0;i<2;i++) a.push(3600); return a; })(); // saldo de cada pausa (segundos)
+
+function loadDevMode() {
+    try {
+        devModeEnabled       = localStorage.getItem('devModeEnabled') === '1';
+        devDoubleCountActive = localStorage.getItem('devDoubleCount') === '1';
+    } catch(e) {}
+    var chk = document.getElementById('cfgDevMode'); if (chk) chk.checked = devModeEnabled;
+    setSectionVisible('updateIntervalsSection', devModeEnabled);
+    updateDevBadge();
+}
+
+function saveDevMode() {
+    var chk = document.getElementById('cfgDevMode');
+    devModeEnabled = chk ? chk.checked : false;
+    try { localStorage.setItem('devModeEnabled', devModeEnabled ? '1' : '0'); } catch(e) {}
+    // Ao desligar o modo dev, desativa também a contagem pela metade
+    if (!devModeEnabled) {
+        devDoubleCountActive = false;
+        try { localStorage.setItem('devDoubleCount', '0'); } catch(e) {}
+        closeDevMinMenu();
+    }
+    setSectionVisible('updateIntervalsSection', devModeEnabled);
+    updateDevBadge();
+    var fb = document.getElementById('spDevModeFeedback');
+    if (fb) { fb.textContent = devModeEnabled ? 'Modo desenvolvedor ativado.' : 'Modo desenvolvedor desativado.'; setTimeout(function(){ fb.textContent=''; }, 2000); }
+    console.log('[DEV] Modo desenvolvedor ' + (devModeEnabled ? 'ativado' : 'desativado'));
+}
+
+function updateDevBadge() {
+    var badge = document.getElementById('devDoubleBadge');
+    if (badge) badge.style.display = (devModeEnabled && devDoubleCountActive) ? '' : 'none';
+    var btn = document.getElementById('devMinMenuDoubleBtn');
+    if (btn) {
+        btn.classList.toggle('active', devDoubleCountActive);
+        btn.textContent = (devDoubleCountActive ? '✓ ' : '⧉ ') + 'Contar pela metade';
+    }
+}
+
+function minimizeButtonClick(ev) {
+    if (!devModeEnabled) { hostCall('MinimizeWidget'); return; }
+    ev.stopPropagation();
+    var content = document.getElementById('pomodoroContent');
+    var isMinimized = content && content.style.display === 'none';
+    if (isMinimized) {
+        // Só restaura a janela (mecanismo já existente), sem abrir o menu
+        hostCall('MinimizeWidget');
+    } else {
+        toggleDevMinMenu();
+    }
+}
+
+function toggleDevMinMenu() {
+    var menu = document.getElementById('devMinMenu');
+    var open = menu && menu.style.display !== 'none';
+    if (open) closeDevMinMenu();
+    else openDevMinMenu();
+}
+
+function openDevMinMenu() {
+    var menu = document.getElementById('devMinMenu');
+    var wrap = document.getElementById('btnMinWrap');
+    if (!menu || !wrap) return;
+    var r = wrap.getBoundingClientRect();
+    menu.style.top   = (r.bottom + 4) + 'px';
+    menu.style.right = (window.innerWidth - r.right) + 'px';
+    menu.style.left  = 'auto';
+    menu.style.display = 'flex';
+}
+
+function closeDevMinMenu() {
+    var menu = document.getElementById('devMinMenu');
+    if (menu) menu.style.display = 'none';
+}
+
+function devMinMenuMinimize(ev) {
+    ev.stopPropagation();
+    closeDevMinMenu();
+    hostCall('MinimizeWidget');
+}
+
+function devMinMenuToggleDouble(ev) {
+    ev.stopPropagation();
+    devDoubleCountActive = !devDoubleCountActive;
+    try { localStorage.setItem('devDoubleCount', devDoubleCountActive ? '1' : '0'); } catch(e) {}
+    updateDevBadge();
+    closeDevMinMenu();
+    console.log('[DEV] Contagem pela metade ' + (devDoubleCountActive ? 'ativada' : 'desativada'));
+}
+
+function updateAdminPauseMenuButton() {
+    var btn = document.getElementById('devMinMenuAdminPauseBtn');
+    if (!btn) return;
+    if (adminPauseActive) {
+        btn.textContent = 'Pausa administrativa (ativa — Pausa ' + (adminPauseActiveSlot + 1) + ')';
+        btn.style.color = '#64b5f6';
+    } else {
+        var disponiveis = adminPauseSlots.filter(function(s) { return s > 0; }).length;
+        btn.textContent = 'Pausa administrativa (' + disponiveis + '/' + ADMIN_PAUSE_MAX_USES + ' disponíveis)';
+        btn.style.color = disponiveis > 0 ? '' : '#666';
+    }
+}
+
+function devMinMenuOpenAdminPause(ev) {
+    ev.stopPropagation();
+    closeDevMinMenu();
+    renderAdminPauseOverlay();
+    document.getElementById('adminPauseOverlay').style.display = 'block';
+}
+
+function closeAdminPauseOverlay() {
+    document.getElementById('adminPauseOverlay').style.display = 'none';
+    var tip = document.getElementById('adminPauseInfoTip'); if (tip) tip.style.display = 'none';
+}
+
+function toggleAdminPauseInfoTip(ev) {
+    ev.stopPropagation();
+    var tip = document.getElementById('adminPauseInfoTip');
+    if (!tip) return;
+    tip.style.display = (tip.style.display === 'none') ? 'block' : 'none';
+}
+
+document.addEventListener('click', function(ev) {
+    var tip = document.getElementById('adminPauseInfoTip');
+    if (tip && tip.style.display !== 'none' && !tip.parentNode.contains(ev.target)) tip.style.display = 'none';
+});
+
+function fmtMinSec(totalSeconds) {
+    var m = Math.floor(totalSeconds / 60), s = Math.floor(totalSeconds % 60);
+    return m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+function renderAdminPauseOverlay() {
+    var mount = document.getElementById('adminPauseSlots');
+    if (!mount) return;
+    var html = '';
+    for (var i = 0; i < ADMIN_PAUSE_MAX_USES; i++) {
+        var remaining = adminPauseSlots[i];
+        var isThisActive = adminPauseActive && adminPauseActiveSlot === i;
+        var label, btnLabel, btnBg, btnDisabled;
+        if (isThisActive) {
+            label = 'Pausa ' + (i + 1) + ' — ativa, encerra em ' + fmtMinSec(remaining);
+            btnLabel = 'Encerrar agora'; btnBg = '#c53030'; btnDisabled = false;
+        } else if (adminPauseActive) {
+            // outra pausa está ativa no momento — trava esta
+            label = 'Pausa ' + (i + 1) + ' — ' + fmtMinSec(remaining) + ' restantes';
+            btnLabel = 'Indisponível agora'; btnBg = '#4a5568'; btnDisabled = true;
+        } else if (remaining <= 0) {
+            label = 'Pausa ' + (i + 1) + ' — esgotada hoje';
+            btnLabel = 'Esgotada'; btnBg = '#4a5568'; btnDisabled = true;
+        } else {
+            label = 'Pausa ' + (i + 1) + ' — ' + fmtMinSec(remaining) + ' disponíveis';
+            btnLabel = 'Iniciar (60 min)'; btnBg = '#1976d2'; btnDisabled = false;
+        }
+        html += '<div style=""display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;"">' +
+                    '<span style=""color:#e3f2fd;font-size:10.5px;flex:1;"">' + label + '</span>' +
+                    '<button onclick=""adminPauseSlotClick(' + i + ')"" ' + (btnDisabled ? 'disabled' : '') + ' style=""background:' + btnBg + ';color:#fff;border:none;border-radius:6px;padding:6px 9px;font-size:10.5px;font-weight:700;cursor:' + (btnDisabled ? 'default' : 'pointer') + ';white-space:nowrap;"">' + btnLabel + '</button>' +
+                '</div>';
+    }
+    mount.innerHTML = html;
+}
+
+function adminPauseSlotClick(i) {
+    if (adminPauseActive && adminPauseActiveSlot === i) {
+        stopTimer(); // encerra a pausa administrativa E pausa o pomodoro de verdade (mesmo caminho do botão Pausar)
+    } else if (!adminPauseActive) {
+        startAdminPause(i);
+    }
+    renderAdminPauseOverlay();
+}
+
+function startAdminPause(slotIndex) {
+    if (adminPauseActive || slotIndex < 0 || slotIndex >= ADMIN_PAUSE_MAX_USES) return;
+    if (adminPauseSlots[slotIndex] <= 0) return;
+    // Se havia um desvio em andamento (widget pausado), descarta sem contabilizar
+    if (pauseStartTs !== null) {
+        if (pauseDisplayInterval) { clearInterval(pauseDisplayInterval); pauseDisplayInterval = null; }
+        var block = document.getElementById('pauseStatBlock'); if (block) block.style.display = 'none';
+        pauseStartTs = null; // descartado — não soma a totalDesvioSeconds
+    }
+    // Descarrega qualquer tempo real já acumulado ANTES de blindar — evita que aquele
+    // saldo seja salvo depois, já com a pausa administrativa ativa (pareceria ""vazamento"")
+    saveTimeAcc();
+    adminPauseActive      = true;
+    adminPauseActiveSlot  = slotIndex;
+    // Cada pausa é fixa em até 60 min (nunca mais que o que resta nesse slot) — só debita o que for realmente usado (a cada tick)
+    adminPauseSecondsLeft = adminPauseSlots[slotIndex];
+    adminPauseSave();
+    var badge = document.getElementById('adminPauseBadge'); if (badge) badge.style.display = '';
+    var hdr   = document.getElementById('pomodoroHeader');   if (hdr)   hdr.classList.add('adminpause');
+    var grade = document.getElementById('gradeMount'); if (grade) grade.style.display = 'none';
+    updateHgMode(isBreakTime);
+    if (!isRunning) _startTick(); // garante que o pomodoroTimer continue contando normalmente
+    updateDisplay(); // atualiza timer/badge/barra na hora, sem esperar o próximo tick (até 1s de atraso)
+    updateLockButton(); // bloqueia o botão Pausar na hora também
+    updateAdminPauseMenuButton();
+    console.log('[ADMIN_PAUSE] Pausa ' + (slotIndex + 1) + ' iniciada — ' + Math.floor(adminPauseSlots[slotIndex]/60) + ' min disponíveis nesse slot');
+}
+
+function endAdminPause(reason) {
+    if (!adminPauseActive) return;
+    var slotIndex = adminPauseActiveSlot;
+    adminPauseActive      = false;
+    adminPauseActiveSlot  = -1;
+    adminPauseSecondsLeft = 0;
+    adminPauseSave();
+    var badge = document.getElementById('adminPauseBadge'); if (badge) badge.style.display = 'none';
+    var hdr   = document.getElementById('pomodoroHeader');   if (hdr)   hdr.classList.remove('adminpause');
+    var grade = document.getElementById('gradeMount'); if (grade) grade.style.display = '';
+    updateHgMode(isBreakTime);
+    var motivo = reason === true ? 'automaticamente (60 min)' : 'manualmente';
+    console.log('[ADMIN_PAUSE] Pausa ' + (slotIndex + 1) + ' encerrada ' + motivo);
+    updateAdminPauseMenuButton();
+}
+
+function adminPauseLoad() {
+    var defaults = [];
+    for (var i = 0; i < ADMIN_PAUSE_MAX_USES; i++) defaults.push(ADMIN_PAUSE_DURATION);
+    try {
+        var s = JSON.parse(localStorage.getItem('adminPauseState') || 'null');
+        if (s && s.date === dateToday() && Array.isArray(s.slots) && s.slots.length === ADMIN_PAUSE_MAX_USES) {
+            adminPauseSlots = s.slots;
+        } else {
+            adminPauseSlots = defaults; // novo dia — saldo renovado
+        }
+    } catch(e) { adminPauseSlots = defaults; }
+    updateAdminPauseMenuButton();
+}
+
+function adminPauseSave() {
+    try { localStorage.setItem('adminPauseState', JSON.stringify({ date: dateToday(), slots: adminPauseSlots })); } catch(e) {}
+}
+
+document.addEventListener('click', function(ev) {
+    var wrap = document.getElementById('btnMinWrap');
+    if (wrap && !wrap.contains(ev.target)) closeDevMinMenu();
+});
 
 var studyingTaskId        = null;
 var studyingTaskName      = 'Nenhuma tarefa';
@@ -888,10 +1231,12 @@ document.addEventListener('DOMContentLoaded', function() {
     initTooltip();
 
     loadSettings();
+    loadDevMode();
+    adminPauseLoad();
     coffeeLoad();
 
     setInterval(function() {
-        if (!isRunning || isBreakTime || !studyingTaskId) return;
+        if (!isRunning || isBreakTime || !studyingTaskId || adminPauseActive) return;
         // Se lastSavedSessionSec > currentSessionSeconds, houve reset — realinha
         if (lastSavedSessionSec > currentSessionSeconds) lastSavedSessionSec = currentSessionSeconds;
         var diff = currentSessionSeconds - lastSavedSessionSec;
@@ -1040,7 +1385,7 @@ async function updateTarefaSegundos(segundos) {
 }
 
 async function saveTimeAcc() {
-    if (!studyingTaskId || accumulatedSeconds <= 0) return;
+    if (!studyingTaskId || accumulatedSeconds <= 0 || adminPauseActive) return;
     var minutos   = accumulatedSeconds / 60;
     if (minutos < cfg.minMinutes) return;
     var secToSave      = accumulatedSeconds;
@@ -1101,7 +1446,7 @@ function setTaskTitle(name) {
 }
 
 function toggleTimer() {
-    if (isRunning && isPauseLocked()) return; // bloqueado
+    if (isRunning && (isPauseLocked() || adminPauseActive)) return; // bloqueado
     isRunning ? stopTimer() : startTimer(); saveState();
 }
 
@@ -1119,6 +1464,7 @@ function startTimer() {
 
 function _startTick() {
     isRunning = true;
+    devHalfCarry = 0;
     var btn = document.getElementById('pomodoroToggle');
     var hdr = document.getElementById('pomodoroHeader');
     if (btn) { btn.textContent = 'Pausar'; btn.className = 'btn-start running'; }
@@ -1128,6 +1474,7 @@ function _startTick() {
 }
 
 function stopTimer() {
+    if (adminPauseActive) endAdminPause(false); // pausar manualmente encerra a pausa administrativa
     isRunning = false;
     var btn = document.getElementById('pomodoroToggle');
     var hdr = document.getElementById('pomodoroHeader');
@@ -1136,20 +1483,46 @@ function stopTimer() {
     if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
     if (!isBreakTime) { pauseStartTs = Date.now(); startPauseDisplay(); }
     else { pauseStartTs = null; var b = document.getElementById('pauseStatBlock'); if (b) b.style.display = 'none'; }
+    updateDisplay(); // garante que timer/badge/barra voltem ao estado real (sem cor/valor da pausa administrativa)
     saveState();
 }
 
+var devHalfCarry = 0; // acumula frações de segundo quando a contagem pela metade está ativa
+
 function tick() {
-    if (currentTime > 0) {
-        currentTime--;
-        if (!isBreakTime) {
-            currentSessionSeconds++;
-            totalTodaySeconds++;
-            checkTempoExcedido();
+    var advance = (devModeEnabled && devDoubleCountActive) ? 0.5 : 1;
+    devHalfCarry += advance;
+    if (devHalfCarry >= 1) {
+        devHalfCarry -= 1;
+        if (!adminPauseActive) {
+            if (currentTime > 0) {
+                currentTime--;
+                if (!isBreakTime) {
+                    currentSessionSeconds++;
+                    totalTodaySeconds++;
+                    checkTempoExcedido();
+                }
+            } else { handleTimerComplete(); }
         }
-    } else { handleTimerComplete(); }
+    }
+    if (devModeEnabled && devDoubleCountActive) pulseHalfBadge();
+    if (adminPauseActive) {
+        adminPauseSecondsLeft--;
+        if (adminPauseActiveSlot >= 0) adminPauseSlots[adminPauseActiveSlot] = Math.max(0, adminPauseSlots[adminPauseActiveSlot] - 1); // só debita o que é realmente usado
+        adminPauseSave();
+        if (document.getElementById('adminPauseOverlay').style.display !== 'none') renderAdminPauseOverlay();
+        if (adminPauseSecondsLeft <= 0) endAdminPause(true);
+    }
     updateDisplay();
     updateLockButton();
+}
+
+function pulseHalfBadge() {
+    var el = document.getElementById('devHalfBadge');
+    if (!el) return;
+    el.classList.remove('pulse');
+    void el.offsetWidth; // força reflow pra poder re-disparar a animação
+    el.classList.add('pulse');
 }
 
 function handleTimerComplete() {
@@ -1280,15 +1653,25 @@ function confirmDesvioMotivo() {
 }
 
 function updateDisplay() {
-    var m = Math.floor(currentTime / 60), s = currentTime % 60;
-    var str = m + ':' + (s < 10 ? '0' : '') + s;
+    var str;
+    if (adminPauseActive) {
+        var am = Math.floor(adminPauseSecondsLeft / 60), as = adminPauseSecondsLeft % 60;
+        str = am + ':' + (as < 10 ? '0' : '') + as;
+    } else {
+        var m = Math.floor(currentTime / 60), s = currentTime % 60;
+        str = m + ':' + (s < 10 ? '0' : '') + s;
+    }
     var timer = document.getElementById('pomodoroTimer');
     var mini  = document.getElementById('pomodoroTimeMini');
     var bar   = document.getElementById('pomodoroProgressBar');
-    if (timer) { timer.textContent = str; timer.className = 'timer' + (isBreakTime ? ' break' : ''); }
-    if (mini)  { mini.textContent  = str; mini.className  = 'time-mini' + (isBreakTime ? ' break' : ''); }
+    if (timer) { timer.textContent = str; timer.className = 'timer' + (adminPauseActive ? ' adminpause' : (isBreakTime ? ' break' : '')); }
+    if (mini)  { mini.textContent  = str; mini.className  = 'time-mini' + (adminPauseActive ? ' adminpause' : (isBreakTime ? ' break' : '')); }
     var total = isBreakTime ? cfg.breakMinutes * 60 : cfg.focoMinutes * 60;
-    if (bar)   { bar.style.width = (((total - currentTime) / total) * 100) + '%'; bar.className = 'progress-bar' + (isBreakTime ? ' break' : ''); }
+    if (adminPauseActive) {
+        if (bar) { bar.style.width = (((ADMIN_PAUSE_DURATION - adminPauseSecondsLeft) / ADMIN_PAUSE_DURATION) * 100) + '%'; bar.className = 'progress-bar adminpause'; }
+    } else {
+        if (bar) { bar.style.width = (((total - currentTime) / total) * 100) + '%'; bar.className = 'progress-bar' + (isBreakTime ? ' break' : ''); }
+    }
     var cs = document.getElementById('currentSession');
     var tt = document.getElementById('totalToday');
     if (cs) cs.textContent = fmtSec(currentSessionSeconds);
@@ -1349,7 +1732,7 @@ function onHourglassClick() {
     console.log('[SYNC] Forçado via ampulheta');
 }
 function updateHgMode(brk) {
-    var c = brk ? '#4caf50' : '#7b1fa2';
+    var c = adminPauseActive ? '#2196f3' : (brk ? '#4caf50' : '#7b1fa2');
     if (hgTop) hgTop.setAttribute('fill',c);
     if (hgBot) hgBot.setAttribute('fill',c);
     if (hgStr) hgStr.setAttribute('fill',c);
@@ -1442,6 +1825,11 @@ function applySettings() {
     console.log('[CFG] sync=' + cfg.syncInterval + 's save=' + cfg.saveInterval + 's minMin=' + cfg.minMinutes + ' foco=' + cfg.focoMinutes + 'min break=' + cfg.breakMinutes + 'min');
 }
 
+function setSectionVisible(id, visible) {
+    var el = document.getElementById(id);
+    if (el) el.style.display = visible ? '' : 'none';
+}
+
 function syncInputsFromCfg() {
     // Carrega token salvo no campo da sidebar
     var tokenInput = document.getElementById('cfgApiToken');
@@ -1459,6 +1847,7 @@ function syncInputsFromCfg() {
     f('cfgDesvio', cfg.desvioMinutes);
     var chk = document.getElementById('cfgLockPause'); if (chk) chk.checked = cfg.lockPause;
     f('cfgLockPct', cfg.lockPct);
+    setSectionVisible('lockPauseContent', cfg.lockPause);
     updateLockButton();
 }
 
@@ -1486,6 +1875,7 @@ function saveLockSettings() {
     if (pct) pct.value = cfg.lockPct;
     try { localStorage.setItem('pwCfg', JSON.stringify(cfg)); } catch(e) {}
     updateLockButton();
+    setSectionVisible('lockPauseContent', cfg.lockPause);
     var fb = document.getElementById('spLockFeedback');
     if (fb) { fb.textContent = cfg.lockPause ? 'Bloqueio ativo!' : 'Bloqueio desativado.'; setTimeout(function(){ fb.textContent=''; }, 2000); }
 }
@@ -1505,7 +1895,8 @@ function updateLockButton() {
     var pausaAtualSec = pauseStartTs !== null ? (Date.now() - pauseStartTs) / 1000 : 0;
     var desvioTotalMin = (totalDesvioSeconds + pausaAtualSec) / 60;
     var limiteMin = cfg.focoMinutes * (cfg.lockPct / 100);
-    var locked = cfg.lockPause && !isBreakTime && desvioTotalMin >= limiteMin;
+    var desvioLocked = cfg.lockPause && !isBreakTime && desvioTotalMin >= limiteMin;
+    var locked = desvioLocked || adminPauseActive;
     console.log('[LOCK] desvio=' + desvioTotalMin.toFixed(2) + 'min limite=' + limiteMin.toFixed(2) + 'min bloqueado=' + locked);
     if (locked !== _lastLockState) {
         _lastLockState = locked;
@@ -1513,7 +1904,7 @@ function updateLockButton() {
     }
     if (locked) {
         btn.classList.add('locked');
-        btn.setAttribute('data-tip', 'Pausa bloqueada: desvio acumulado atingiu ' + cfg.lockPct + '% do foco');
+        btn.setAttribute('data-tip', adminPauseActive ? 'Pausar bloqueado: pausa administrativa ativa' : 'Pausa bloqueada: desvio acumulado atingiu ' + cfg.lockPct + '% do foco');
     } else {
         btn.classList.remove('locked');
         btn.removeAttribute('data-tip');
@@ -1583,6 +1974,7 @@ var coffeeInterval    = 120; // minutos (padrão 2h)
 var coffeeSecondsLeft = 0;
 var coffeeTimer       = null;
 var coffeeHistory     = []; // [{time: 'HH:MM', ts: Date.now()}]
+var coffeeEnabled     = true;
 
 function coffeeLoad() {
     try {
@@ -1590,7 +1982,9 @@ function coffeeLoad() {
         var d = dateToday();
         if (s) {
             coffeeInterval = s.interval || 120;
+            coffeeEnabled  = s.enabled != null ? s.enabled : true;
             var el = document.getElementById('cfgCoffee'); if (el) el.value = coffeeInterval;
+            var chk = document.getElementById('cfgCoffeeEnabled'); if (chk) chk.checked = coffeeEnabled;
             // restaura histórico só se for hoje
             if (s.date === d) coffeeHistory = s.history || [];
             else coffeeHistory = [];
@@ -1601,8 +1995,21 @@ function coffeeLoad() {
             coffeeSecondsLeft = coffeeInterval * 60;
         }
     } catch(e) { coffeeSecondsLeft = coffeeInterval * 60; }
+    setSectionVisible('coffeeContent', coffeeEnabled);
     coffeeRenderHistory();
+    coffeeUpdateEmoji();
     coffeeStartTick();
+}
+
+function saveCoffeeEnabled() {
+    var chk = document.getElementById('cfgCoffeeEnabled');
+    coffeeEnabled = chk ? chk.checked : true;
+    coffeeSave();
+    setSectionVisible('coffeeContent', coffeeEnabled);
+    coffeeUpdateEmoji();
+    var fb = document.getElementById('spCoffeeFeedback');
+    if (fb) { fb.textContent = coffeeEnabled ? 'Lembrete de café ativado.' : 'Lembrete de café desativado.'; setTimeout(function(){ fb.textContent=''; }, 2000); }
+    console.log('[COFFEE] Lembrete ' + (coffeeEnabled ? 'ativado' : 'desativado'));
 }
 
 function coffeeStartTick() {
@@ -1614,12 +2021,13 @@ function coffeeSave() {
     try {
         localStorage.setItem('coffeeState', JSON.stringify({
             date: dateToday(), interval: coffeeInterval,
-            secondsLeft: coffeeSecondsLeft, history: coffeeHistory
+            secondsLeft: coffeeSecondsLeft, history: coffeeHistory, enabled: coffeeEnabled
         }));
     } catch(e) {}
 }
 
 function coffeeTick() {
+    if (!coffeeEnabled) return;
     if (coffeeSecondsLeft > 0) {
         coffeeSecondsLeft--;
         coffeeSave();
@@ -1640,6 +2048,11 @@ function coffeeAlert() {
 function coffeeUpdateEmoji() {
     var em = document.getElementById('coffeeEmoji');
     if (!em) return;
+    if (!coffeeEnabled) {
+        em.style.display = 'none';
+        em.classList.remove('ready');
+        return;
+    }
     if (coffeeSecondsLeft <= 0) {
         em.style.display = '';
         em.classList.add('ready');
@@ -1671,6 +2084,15 @@ function coffeeConfirm() {
     }
 }
 
+function coffeeClearHistory() {
+    coffeeHistory = [];
+    coffeeSave();
+    coffeeRenderHistory();
+    var fb = document.getElementById('spCoffeeFeedback');
+    if (fb) { fb.textContent = 'Histórico limpo!'; setTimeout(function(){ fb.textContent=''; }, 2000); }
+    console.log('[COFFEE] Histórico de xícaras limpo');
+}
+
 function coffeeRenderHistory() {
     var container = document.getElementById('coffeeHistory');
     if (!container) return;
@@ -1681,9 +2103,19 @@ function coffeeRenderHistory() {
     var html = '';
     coffeeHistory.forEach(function(item, i) {
         var label = i === 0 ? '(última)' : '';
-        html += '<div class=""sp-history-item""><span class=""sp-history-time"">' + item.time + '</span><span>xícara ' + (coffeeHistory.length - i) + ' ' + label + '</span></div>';
+        html += '<div class=""sp-history-item""><span><span class=""sp-history-time"">' + item.time + '</span> xícara ' + (coffeeHistory.length - i) + ' ' + label + '</span><span class=""sp-history-remove"" onclick=""coffeeRemoveEntry(' + i + ')"" title=""Remover registro"">✕</span></div>';
     });
     container.innerHTML = html;
+}
+
+function coffeeRemoveEntry(index) {
+    if (index < 0 || index >= coffeeHistory.length) return;
+    coffeeHistory.splice(index, 1);
+    coffeeSave();
+    coffeeRenderHistory();
+    var fb = document.getElementById('spCoffeeFeedback');
+    if (fb) { fb.textContent = 'Registro removido.'; setTimeout(function(){ fb.textContent=''; }, 2000); }
+    console.log('[COFFEE] Registro de xícara removido, índice ' + index);
 }
 
 function saveCoffeeSettings() {
